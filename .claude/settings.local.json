@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir:*)",
+      "Skill(unity-mcp-skill)",
+      "mcp__UnityMCP__manage_scene",
+      "mcp__UnityMCP__find_gameobjects",
+      "mcp__UnityMCP__manage_components",
+      "mcp__UnityMCP__manage_build",
+      "mcp__UnityMCP__refresh_unity",
+      "mcp__UnityMCP__read_console",
+      "Bash(dir \"C:\\Repo\\Github\\vision_server\\app\")",
+      "Bash(conda run:*)",
+      "mcp__UnityMCP__manage_gameobject",
+      "Bash(adb logcat:*)",
+      "Bash(findstr:*)",
+      "Bash(Select-Object -Last 30)",
+      "Bash(netstat:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "mcp__UnityMCP__batch_execute",
+      "Bash(git add:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

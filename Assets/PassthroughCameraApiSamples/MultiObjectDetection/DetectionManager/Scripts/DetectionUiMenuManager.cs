@@ -1,5 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+using System;
 using System.Collections;
 using Meta.XR.Samples;
 using UnityEngine;
@@ -29,6 +30,16 @@ namespace PassthroughCameraSamples.MultiObjectDetection
 
         // pause menu
         public bool IsPaused { get; private set; } = true;
+
+        // Latest inference metrics
+        private float m_e2eMs = 0f;
+        private float m_uploadMs = 0f;
+        private float m_serverProcMs = 0f;
+        private float m_downloadMs = 0f;
+        private float m_parseMs = 0f;
+        private int m_uploadBytes = 0;
+        private int m_downloadBytes = 0;
+        private float m_avgConfidence = 0f;
 
         #region Unity Functions
         private IEnumerator Start()
@@ -101,7 +112,28 @@ namespace PassthroughCameraSamples.MultiObjectDetection
         #region Ui state: detection information
         private void UpdateLabelInformation()
         {
-            m_labelInformation.text = $"Unity Sentis version: 2.1.3\nAI model: Yolo\nDetecting objects: {m_objectsDetected}\nObjects identified: {m_objectsIdentified}";
+            string infoText = $"Unity Sentis version: 2.1.3\nAI model: Yolo\nDetecting objects: {m_objectsDetected}\nObjects identified: {m_objectsIdentified}";
+
+            // Append metrics if available
+            if (m_e2eMs > 0f)
+            {
+                // Calculate percentages
+                float uploadPct = m_e2eMs > 0 ? (m_uploadMs / m_e2eMs) * 100f : 0f;
+                float serverPct = m_e2eMs > 0 ? (m_serverProcMs / m_e2eMs) * 100f : 0f;
+                float downloadPct = m_e2eMs > 0 ? (m_downloadMs / m_e2eMs) * 100f : 0f;
+                float parsePct = m_e2eMs > 0 ? (m_parseMs / m_e2eMs) * 100f : 0f;
+
+                infoText += $"\n\n--- Inference Metrics ---";
+                infoText += $"\nE2E Latency: {m_e2eMs:F0}ms";
+                infoText += $"\n├ Upload: {m_uploadMs:F0}ms ({uploadPct:F0}%)";
+                infoText += $"\n├ Server: {m_serverProcMs:F0}ms ({serverPct:F0}%)";
+                infoText += $"\n├ Download: {m_downloadMs:F0}ms ({downloadPct:F0}%)";
+                infoText += $"\n└ Parse: {m_parseMs:F0}ms ({parsePct:F0}%)";
+                infoText += $"\nData: {FormatBytes(m_uploadBytes)}↑ {FormatBytes(m_downloadBytes)}↓";
+                infoText += $"\nAvg Confidence: {m_avgConfidence:F2}";
+            }
+
+            m_labelInformation.text = infoText;
         }
 
         public void OnObjectsDetected(int objects)
@@ -122,6 +154,40 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 m_objectsIdentified += objects;
             }
             UpdateLabelInformation();
+        }
+
+        /// <summary>
+        /// Update inference metrics display
+        /// </summary>
+        public void UpdateMetrics(
+            float e2eMs,
+            float uploadMs,
+            float serverProcMs,
+            float downloadMs,
+            float parseMs,
+            int uploadBytes,
+            int downloadBytes,
+            float avgConfidence)
+        {
+            m_e2eMs = e2eMs;
+            m_uploadMs = uploadMs;
+            m_serverProcMs = serverProcMs;
+            m_downloadMs = downloadMs;
+            m_parseMs = parseMs;
+            m_uploadBytes = uploadBytes;
+            m_downloadBytes = downloadBytes;
+            m_avgConfidence = avgConfidence;
+
+            UpdateLabelInformation();
+        }
+
+        private string FormatBytes(int bytes)
+        {
+            if (bytes < 1024)
+                return $"{bytes}B";
+            if (bytes < 1024 * 1024)
+                return $"{bytes / 1024f:F1}KB";
+            return $"{bytes / (1024f * 1024f):F2}MB";
         }
         #endregion
     }

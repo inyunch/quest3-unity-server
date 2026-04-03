@@ -19,3 +19,6 @@ PerformanceTestRun*.*
 StreamingAssets*
 buildInfo.txt
 Packages/packages-lock.json
+nul
+output/
+passthroughcamera_BurstDebugInformation_DoNotShip/

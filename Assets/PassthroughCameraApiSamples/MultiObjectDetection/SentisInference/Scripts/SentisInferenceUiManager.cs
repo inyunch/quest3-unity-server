@@ -32,7 +32,10 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             public float lastUpdateTime;
         }
 
-        private void Awake() => m_detectionBoxPrefab.gameObject.SetActive(false);
+        private void Awake()
+        {
+            m_detectionBoxPrefab.gameObject.SetActive(false);
+        }
 
         private void Update()
         {
