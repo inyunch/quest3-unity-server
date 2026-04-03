@@ -636,9 +636,11 @@ Server-side logs enable offline analysis:
 
 ## Related Documents
 
-- [README.md](README.md) - Project overview
-- [QUICK_START_GUIDE.md](QUICK_START_GUIDE.md) - Quick start guide
-- [POSE_ESTIMATION_TECHNICAL_GUIDE.md](POSE_ESTIMATION_TECHNICAL_GUIDE.md) - Pose estimation technical guide
+- [Main README](../README.md) - Project overview
+- [Quick Start Guide](QUICK_START_GUIDE.md) - Quick start guide
+- [Pose Estimation Technical Guide](POSE_ESTIMATION_TECHNICAL_GUIDE.md) - Pose estimation technical guide
+- [Coordinate Transformation Guide](COORDINATE_TRANSFORMATION_GUIDE.md) - Coordinate systems reference
+- [Diagnostic Tools](../Tools/README.md) - Monitoring and debugging scripts
 
 ---
 

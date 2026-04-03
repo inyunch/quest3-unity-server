@@ -15,7 +15,19 @@ The project includes **five sample scenes** demonstrating various use cases:
 
 ## Documentation
 
-For comprehensive guides, API reference, and tutorials, visit the official Meta Developers documentation:
+### Project Documentation
+
+This repository includes comprehensive guides and tools:
+
+- **[Quick Start Guide](./Documentation/QUICK_START_GUIDE.md)** - 20-minute setup guide for pose estimation
+- **[Latency HUD Guide](./Documentation/LATENCY_HUD_GUIDE.md)** - Real-time performance monitoring system
+- **[Pose Estimation Technical Guide](./Documentation/POSE_ESTIMATION_TECHNICAL_GUIDE.md)** - Architecture and implementation details
+- **[Coordinate Transformation Guide](./Documentation/COORDINATE_TRANSFORMATION_GUIDE.md)** - Understanding coordinate systems
+- **[Diagnostic Tools](./Tools/README.md)** - ADB scripts for monitoring and debugging
+
+### Official Meta Documentation
+
+For Meta's official API reference and tutorials:
 
 - **[Passthrough Camera API Overview](https://developers.meta.com/horizon/documentation/unity/unity-pca-overview)** - Introduction and key concepts
 - **[Getting Started Guide](https://developers.meta.com/horizon/documentation/unity/unity-pca-documentation)** - Setup, configuration, and usage instructions
