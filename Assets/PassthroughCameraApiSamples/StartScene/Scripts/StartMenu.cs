@@ -27,6 +27,7 @@ namespace PassthroughCameraSamples.StartScene
         {
             var generalScenes = new List<Tuple<int, string>>();
             var passthroughScenes = new List<Tuple<int, string>>();
+            var inferenceScenes = new List<Tuple<int, string>>();
             var proControllerScenes = new List<Tuple<int, string>>();
 
             var n = UnityEngine.SceneManagement.SceneManager.sceneCountInBuildSettings;
@@ -34,7 +35,12 @@ namespace PassthroughCameraSamples.StartScene
             {
                 var path = UnityEngine.SceneManagement.SceneUtility.GetScenePathByBuildIndex(sceneIndex);
 
-                if (path.Contains("Passthrough"))
+                // Inference modes (detection, pose, depth)
+                if (path.Contains("MultiObjectDetection") || path.Contains("PoseEstimation") || path.Contains("DepthEstimation"))
+                {
+                    inferenceScenes.Add(new Tuple<int, string>(sceneIndex, path));
+                }
+                else if (path.Contains("Passthrough"))
                 {
                     passthroughScenes.Add(new Tuple<int, string>(sceneIndex, path));
                 }
@@ -49,9 +55,30 @@ namespace PassthroughCameraSamples.StartScene
             }
 
             var uiBuilder = DebugUIBuilder.Instance;
+
+            // Inference Modes section (left pane)
+            if (inferenceScenes.Count > 0)
+            {
+                _ = uiBuilder.AddLabel("AI Inference Modes", DebugUIBuilder.DEBUG_PANE_LEFT);
+                foreach (var scene in inferenceScenes)
+                {
+                    var sceneName = Path.GetFileNameWithoutExtension(scene.Item2);
+                    // Friendly display names
+                    if (sceneName.Contains("MultiObjectDetection"))
+                        sceneName = "Object Detection (10 FPS)";
+                    else if (sceneName.Contains("PoseEstimation"))
+                        sceneName = "Pose Estimation (5 FPS)";
+                    else if (sceneName.Contains("DepthEstimation"))
+                        sceneName = "Depth Estimation (5 FPS)";
+
+                    _ = uiBuilder.AddButton(sceneName, () => LoadScene(scene.Item1), -1, DebugUIBuilder.DEBUG_PANE_LEFT);
+                }
+            }
+
             if (passthroughScenes.Count > 0)
             {
-                _ = uiBuilder.AddLabel("Passthrough Sample Scenes", DebugUIBuilder.DEBUG_PANE_LEFT);
+                _ = uiBuilder.AddDivider(DebugUIBuilder.DEBUG_PANE_LEFT);
+                _ = uiBuilder.AddLabel("Other Passthrough Scenes", DebugUIBuilder.DEBUG_PANE_LEFT);
                 foreach (var scene in passthroughScenes)
                 {
                     _ = uiBuilder.AddButton(Path.GetFileNameWithoutExtension(scene.Item2), () => LoadScene(scene.Item1), -1, DebugUIBuilder.DEBUG_PANE_LEFT);
