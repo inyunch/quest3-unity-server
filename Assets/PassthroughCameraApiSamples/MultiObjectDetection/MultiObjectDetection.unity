@@ -2378,7 +2378,7 @@ PrefabInstance:
       objectReference: {fileID: 6846995557286463107}
     - target: {fileID: 2681575481727882275, guid: 927c1b782bb796b4b9b433d533cbccca, type: 3}
       propertyPath: m_serverUrl
-      value: http://192.168.0.135:8001/infer_human?mode=detection
+      value: http://35.9.28.119:8001/infer_human?mode=detection
       objectReference: {fileID: 0}
     - target: {fileID: 2681575481727882275, guid: 927c1b782bb796b4b9b433d533cbccca, type: 3}
       propertyPath: m_cameraAccess

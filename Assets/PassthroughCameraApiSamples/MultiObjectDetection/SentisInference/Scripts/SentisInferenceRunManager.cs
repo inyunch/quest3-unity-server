@@ -9,6 +9,7 @@ using Unity.Collections;
 using Unity.InferenceEngine;
 using UnityEngine;
 using UnityEngine.Networking;
+using PassthroughCameraSamples.Shared;
 
 namespace PassthroughCameraSamples.MultiObjectDetection
 {
@@ -29,10 +30,22 @@ namespace PassthroughCameraSamples.MultiObjectDetection
         [Header("UI display references")]
         [SerializeField] private SentisInferenceUiManager m_uiInference;
         [SerializeField] private InferenceHUD m_inferenceHUD;
+        [SerializeField] private SharedInferenceHUD m_sharedHUD;
 
-        [Header("Server Inference")]
+        [Header("Server Inference (NEW)")]
         [SerializeField] private bool m_useServerInference = false;
-        [SerializeField] private string m_serverUrl = "http://192.168.0.135:8001/infer_human?mode=detection";
+        [SerializeField] private InferenceConfig m_inferenceConfig = new InferenceConfig
+        {
+            mode = InferenceMode.ObjectDetection,
+            targetFPS = 10f,
+            jpegQuality = 80,
+            includeMask = false,
+            includeDepth = false
+        };
+
+        [Header("Legacy Server Inference (DEPRECATED - use m_inferenceConfig instead)")]
+        [SerializeField] private string m_serverUrl = "";  // Left for backward compatibility, use m_inferenceConfig.BuildUrl() instead
+        [SerializeField, Range(60, 100)] private int m_jpegQuality = 80;  // DEPRECATED: use m_inferenceConfig.jpegQuality
 
         [Header("[Editor Only] Convert to Sentis")]
         public ModelAsset OnnxModel;
@@ -50,6 +63,16 @@ namespace PassthroughCameraSamples.MultiObjectDetection
         private float m_lastParseMs = 0f;
         private int m_lastUploadBytes = 0;
         private int m_lastDownloadBytes = 0;
+        private int m_lastDownloadBytesCompressed = 0;
+
+        // FPS throttling (Part C)
+        private float m_lastInferenceTime = 0f;
+        private bool m_inferenceInProgress = false;
+
+        // Frame statistics (Part D)
+        private int m_totalFrames = 0;
+        private int m_droppedFrames = 0;
+        private int m_frozenFrames = 0;
 
         private void Awake()
         {
@@ -63,9 +86,32 @@ namespace PassthroughCameraSamples.MultiObjectDetection
         {
             m_uiInference.SetLabels(m_labelsAsset);
 
-            // Test server connection at startup
+            // Validate and log inference configuration
             if (m_useServerInference)
             {
+                // Migrate from legacy settings if needed
+                if (!string.IsNullOrEmpty(m_serverUrl) && m_inferenceConfig.baseUrl == "http://192.168.0.135:8001/infer_human")
+                {
+                    Debug.LogWarning("[DETECTION] m_serverUrl is deprecated. Please use m_inferenceConfig instead.");
+                }
+
+                // Use legacy jpegQuality if it differs from config default
+                if (m_jpegQuality != 80 && m_inferenceConfig.jpegQuality == 80)
+                {
+                    Debug.LogWarning($"[DETECTION] Migrating legacy m_jpegQuality ({m_jpegQuality}) to m_inferenceConfig");
+                    m_inferenceConfig.jpegQuality = m_jpegQuality;
+                }
+
+                m_inferenceConfig.Validate();
+                m_inferenceConfig.LogSummary();
+
+                // Initialize SharedInferenceHUD if available
+                if (m_sharedHUD != null)
+                {
+                    m_sharedHUD.SetMode(m_inferenceConfig.mode, m_inferenceConfig.targetFPS);
+                }
+
+                // Test server connection at startup
                 Debug.Log("[SERVER TEST] Testing connection to server...");
                 yield return TestServerConnection();
             }
@@ -118,11 +164,51 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 yield break;
             }
 
+            // ============================================================================
+            // FPS THROTTLING (Part C)
+            // ============================================================================
+            if (m_useServerInference)
+            {
+                float currentTime = Time.time;
+                float targetInterval = m_inferenceConfig.GetInferenceInterval();
+                float timeSinceLastInference = currentTime - m_lastInferenceTime;
+
+                // Check if we should drop this frame (too soon since last inference)
+                if (timeSinceLastInference < targetInterval)
+                {
+                    // Drop frame - respecting target FPS
+                    m_droppedFrames++;
+                    if (m_sharedHUD != null)
+                    {
+                        m_sharedHUD.ReportDroppedFrame();
+                    }
+                    //Debug.Log($"[FPS THROTTLE] Dropped frame (interval={timeSinceLastInference * 1000f:F0}ms < target={targetInterval * 1000f:F0}ms)");
+                    yield break;
+                }
+
+                // Check if previous inference is still in progress (freeze frame)
+                if (m_inferenceInProgress)
+                {
+                    m_frozenFrames++;
+                    if (m_sharedHUD != null)
+                    {
+                        m_sharedHUD.ReportFrozenFrame();
+                    }
+                    //Debug.Log($"[FREEZE FRAME] Previous inference still in progress, keeping old visualization");
+                    yield break;
+                }
+
+                // Mark inference as in progress
+                m_inferenceInProgress = true;
+                m_lastInferenceTime = currentTime;
+            }
+
             [DllImport("OVRPlugin", CallingConvention = CallingConvention.Cdecl)]
             static extern OVRPlugin.Result ovrp_GetNodePoseStateAtTime(double time, OVRPlugin.Node nodeId, out OVRPlugin.PoseStatef nodePoseState);
             if (!ovrp_GetNodePoseStateAtTime(OVRPlugin.GetTimeInSeconds(), OVRPlugin.Node.Head, out _).IsSuccess())
             {
                 Debug.Log("ovrp_GetNodePoseStateAtTime failed, which means 'm_cameraAccess.GetCameraPose()' is not reliable, skipping.");
+                m_inferenceInProgress = false;
                 yield break;
             }
 
@@ -194,7 +280,14 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 NonMaxSuppression(m_detections, boxes, classIDs, scores, m_iouThreshold, m_scoreThreshold);
             }
 
-            // Checking if spatial anchor is tracked ensures bounding boxes are placed at correct world space positIons.
+            // Mark inference as complete
+            if (m_useServerInference)
+            {
+                m_inferenceInProgress = false;
+                m_totalFrames++;
+            }
+
+            // Checking if spatial anchor is tracked ensures bounding boxes are placed at correct world space positions.
             if (!m_cameraAccess.IsPlaying || m_detectionManager.m_spatialAnchor == null || !m_detectionManager.m_spatialAnchor.IsTracked)
             {
                 yield break;
@@ -376,16 +469,20 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 }
             }
 
-            // 2. Encode texture as JPEG
-            byte[] jpegBytes = tex2D.EncodeToJPG(90);
+            // 2. Encode texture as JPEG (use configurable quality from InferenceConfig)
+            int jpegQuality = m_inferenceConfig.jpegQuality;
+            byte[] jpegBytes = tex2D.EncodeToJPG(jpegQuality);
             int uploadBytes = jpegBytes.Length;
-            Debug.Log($"[SERVER] Encoded JPEG: {uploadBytes} bytes ({tex2D.width}x{tex2D.height})");
+            Debug.Log($"[SERVER] Encoded JPEG (quality={jpegQuality}): {uploadBytes} bytes ({tex2D.width}x{tex2D.height})");
 
             // 3. Create multipart form POST
             List<IMultipartFormSection> formData = new List<IMultipartFormSection>();
             formData.Add(new MultipartFormFileSection("image", jpegBytes, "frame.jpg", "image/jpeg"));
 
-            UnityWebRequest request = UnityWebRequest.Post(m_serverUrl, formData);
+            // Use InferenceConfig to build URL (with fallback to legacy m_serverUrl)
+            string serverUrl = !string.IsNullOrEmpty(m_serverUrl) ? m_serverUrl : m_inferenceConfig.BuildUrl();
+
+            UnityWebRequest request = UnityWebRequest.Post(serverUrl, formData);
 
             // Add HTTP headers (including timing data from previous frame)
             request.SetRequestHeader("X-Scene-Name", "MultiObjectDetection");
@@ -399,8 +496,9 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             request.SetRequestHeader("X-Parse-Ms", m_lastParseMs.ToString("F1"));
             request.SetRequestHeader("X-Upload-Bytes", m_lastUploadBytes.ToString());
             request.SetRequestHeader("X-Download-Bytes", m_lastDownloadBytes.ToString());
+            request.SetRequestHeader("X-Download-Bytes-Compressed", m_lastDownloadBytesCompressed.ToString());
 
-            Debug.Log($"[SERVER SEND] >>> Sending frame {m_frameId} to: {m_serverUrl}");
+            Debug.Log($"[SERVER SEND] >>> Sending frame {m_frameId} to: {serverUrl}");
 
             // 4. Send request and measure UPLOAD time
             float uploadStartTime = Time.realtimeSinceStartup;
@@ -429,7 +527,8 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 Debug.LogError($"[SERVER] Inference failed: {request.error}");
                 Debug.LogError($"[SERVER] Result type: {request.result}");
                 Debug.LogError($"[SERVER] Response code: {request.responseCode}");
-                Debug.LogError($"[SERVER] URL was: {m_serverUrl}");
+                Debug.LogError($"[SERVER] URL was: {serverUrl}");
+                m_inferenceInProgress = false;  // Release lock on error
                 yield break;
             }
 
@@ -464,7 +563,11 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             Debug.Log($"[LATENCY] downloadMs={downloadMs:F1}ms");
 
             Debug.Log($"[TIMING] E2E={e2eMs:F0}ms (upload={uploadMs:F0}ms server={serverProcMs:F0}ms download={downloadMs:F0}ms parse={parseMs:F0}ms)");
-            Debug.Log($"[BYTES] Upload={uploadBytes} Download={downloadBytes}");
+
+            // Log both compressed and uncompressed sizes
+            int uncompressedBytes = System.Text.Encoding.UTF8.GetByteCount(request.downloadHandler.text);
+            float compressionRatio = downloadBytes > 0 ? (float)uncompressedBytes / downloadBytes : 1f;
+            Debug.Log($"[BYTES] Upload={uploadBytes} Download={downloadBytes}B (compressed), {uncompressedBytes}B (uncompressed), {compressionRatio:F2}x compression");
 
             // 6. Convert server detections to Unity format
             m_detections.Clear();
@@ -528,7 +631,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 );
             }
 
-            // Update real-time HUD overlay
+            // Update real-time HUD overlay (legacy)
             if (m_inferenceHUD != null)
             {
                 m_inferenceHUD.UpdateHUD(
@@ -538,9 +641,28 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                     downloadMs,
                     parseMs,
                     uploadBytes,
-                    downloadBytes,
+                    uncompressedBytes,
+                    downloadBytes,  // Compressed size
                     detectionCount,
                     avgConfidence
+                );
+            }
+
+            // Update SharedInferenceHUD with metrics (NEW)
+            if (m_sharedHUD != null)
+            {
+                m_sharedHUD.UpdateMetrics(
+                    e2eMs,
+                    uploadMs,
+                    serverProcMs,
+                    downloadMs,
+                    parseMs,
+                    uploadBytes,
+                    uncompressedBytes,
+                    downloadBytes,
+                    detectionCount,
+                    avgConfidence,
+                    0f  // No keypoint confidence for detection mode
                 );
             }
 
@@ -550,7 +672,8 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             m_lastDownloadMs = downloadMs;
             m_lastParseMs = parseMs;
             m_lastUploadBytes = uploadBytes;
-            m_lastDownloadBytes = downloadBytes;
+            m_lastDownloadBytes = uncompressedBytes;  // Uncompressed size for Excel logging
+            m_lastDownloadBytesCompressed = downloadBytes;  // Compressed size for Excel logging
         }
     }
 }

@@ -2161,7 +2161,7 @@ MonoBehaviour:
   m_poseManager: {fileID: 7042133910910641336}
   m_uiPose: {fileID: 7177215558053442466}
   m_inferenceHUD: {fileID: 0}
-  m_serverUrl: http://192.168.0.135:8001/infer_human?mode=both
+  m_serverUrl: http://35.9.28.119:8001/infer_human?mode=both
   m_minKeypointScore: 0.3
 --- !u!224 &8587535026074093613 stripped
 RectTransform:

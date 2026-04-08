@@ -30,6 +30,7 @@ namespace PassthroughCameraSamples.PoseEstimation
         private float m_parseMs = 0f;
         private int m_uploadBytes = 0;
         private int m_downloadBytes = 0;
+        private int m_downloadBytesCompressed = 0;
         private int m_detectionCount = 0;
         private float m_avgConfidence = 0f;
         private float m_keypointAvgConf = 0f;
@@ -78,6 +79,7 @@ namespace PassthroughCameraSamples.PoseEstimation
             float parseMs,
             int uploadBytes,
             int downloadBytes,
+            int downloadBytesCompressed,
             int detectionCount,
             float avgConfidence,
             float keypointAvgConf = 0f)
@@ -89,6 +91,7 @@ namespace PassthroughCameraSamples.PoseEstimation
             m_parseMs = parseMs;
             m_uploadBytes = uploadBytes;
             m_downloadBytes = downloadBytes;
+            m_downloadBytesCompressed = downloadBytesCompressed;
             m_detectionCount = detectionCount;
             m_avgConfidence = avgConfidence;
             m_keypointAvgConf = keypointAvgConf;
@@ -129,7 +132,8 @@ namespace PassthroughCameraSamples.PoseEstimation
 
             // Add upload/download sizes
             metricsStr += $"Upload: {FormatBytes(m_uploadBytes)}\n";
-            metricsStr += $"Download: {FormatBytes(m_downloadBytes)}";
+            metricsStr += $"Download: {FormatBytes(m_downloadBytes)}\n";
+            metricsStr += $"DL Compressed: {FormatBytes(m_downloadBytesCompressed)}";
 
             m_metricsText.text = metricsStr;
         }

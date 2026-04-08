@@ -30,6 +30,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
         private float m_parseMs = 0f;
         private int m_uploadBytes = 0;
         private int m_downloadBytes = 0;
+        private int m_downloadBytesCompressed = 0;
         private int m_detectionCount = 0;
         private float m_avgConfidence = 0f;
 
@@ -77,6 +78,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             float parseMs,
             int uploadBytes,
             int downloadBytes,
+            int downloadBytesCompressed,
             int detectionCount,
             float avgConfidence)
         {
@@ -89,6 +91,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             m_parseMs = parseMs;
             m_uploadBytes = uploadBytes;
             m_downloadBytes = downloadBytes;
+            m_downloadBytesCompressed = downloadBytesCompressed;
             m_detectionCount = detectionCount;
             m_avgConfidence = avgConfidence;
 
@@ -125,7 +128,8 @@ namespace PassthroughCameraSamples.MultiObjectDetection
 
             // Add upload/download sizes
             metricsStr += $"Upload: {FormatBytes(m_uploadBytes)}\n";
-            metricsStr += $"Download: {FormatBytes(m_downloadBytes)}";
+            metricsStr += $"Download: {FormatBytes(m_downloadBytes)}\n";
+            metricsStr += $"DL Compressed: {FormatBytes(m_downloadBytesCompressed)}";
 
             m_metricsText.text = metricsStr;
         }

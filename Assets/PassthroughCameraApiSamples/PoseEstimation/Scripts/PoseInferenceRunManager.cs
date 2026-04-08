@@ -8,6 +8,7 @@ using Meta.XR.Samples;
 using UnityEngine;
 using UnityEngine.Networking;
 using Newtonsoft.Json;
+using PassthroughCameraSamples.Shared;
 
 namespace PassthroughCameraSamples.PoseEstimation
 {
@@ -21,10 +22,22 @@ namespace PassthroughCameraSamples.PoseEstimation
         [Header("UI display references")]
         [SerializeField] private PoseSkeletonUiManager m_uiPose;
         [SerializeField] private InferenceHUD m_inferenceHUD;
+        [SerializeField] private SharedInferenceHUD m_sharedHUD;
 
-        [Header("Server Inference")]
-        [SerializeField] private string m_serverUrl = "http://192.168.0.135:8001/infer_human?mode=both";
+        [Header("Server Inference (NEW)")]
+        [SerializeField] private InferenceConfig m_inferenceConfig = new InferenceConfig
+        {
+            mode = InferenceMode.Both,
+            targetFPS = 5f,
+            jpegQuality = 80,
+            includeMask = false,
+            includeDepth = false
+        };
         [SerializeField] private float m_minKeypointScore = 0.3f;
+
+        [Header("Legacy Server Inference (DEPRECATED - use m_inferenceConfig instead)")]
+        [SerializeField] private string m_serverUrl = "";  // Left for backward compatibility
+        [SerializeField, Range(60, 100)] private int m_jpegQuality = 80;  // DEPRECATED
 
         private int m_frameId = 0;
 
@@ -35,6 +48,16 @@ namespace PassthroughCameraSamples.PoseEstimation
         private float m_lastParseMs = 0f;
         private int m_lastUploadBytes = 0;
         private int m_lastDownloadBytes = 0;
+        private int m_lastDownloadBytesCompressed = 0;
+
+        // FPS throttling (Part C)
+        private float m_lastInferenceTime = 0f;
+        private bool m_inferenceInProgress = false;
+
+        // Frame statistics (Part D)
+        private int m_totalFrames = 0;
+        private int m_droppedFrames = 0;
+        private int m_frozenFrames = 0;
 
         private IEnumerator Start()
         {
@@ -45,6 +68,27 @@ namespace PassthroughCameraSamples.PoseEstimation
             Debug.Log($"[POSE REF] uiMenuManager={m_uiMenuManager != null}");
             Debug.Log($"[POSE REF] poseManager={m_poseManager != null}");
             Debug.Log($"[POSE REF] uiPose={m_uiPose != null}");
+
+            // Migrate from legacy settings if needed
+            if (!string.IsNullOrEmpty(m_serverUrl) && m_inferenceConfig.baseUrl == "http://192.168.0.135:8001/infer_human")
+            {
+                Debug.LogWarning("[POSE] m_serverUrl is deprecated. Please use m_inferenceConfig instead.");
+            }
+
+            if (m_jpegQuality != 80 && m_inferenceConfig.jpegQuality == 80)
+            {
+                Debug.LogWarning($"[POSE] Migrating legacy m_jpegQuality ({m_jpegQuality}) to m_inferenceConfig");
+                m_inferenceConfig.jpegQuality = m_jpegQuality;
+            }
+
+            m_inferenceConfig.Validate();
+            m_inferenceConfig.LogSummary();
+
+            // Initialize SharedInferenceHUD if available
+            if (m_sharedHUD != null)
+            {
+                m_sharedHUD.SetMode(m_inferenceConfig.mode, m_inferenceConfig.targetFPS);
+            }
 
             // Test server connection at startup
             Debug.Log("[SERVER TEST] Testing connection to server...");
@@ -67,11 +111,46 @@ namespace PassthroughCameraSamples.PoseEstimation
                 yield break;
             }
 
+            // ============================================================================
+            // FPS THROTTLING (Part C)
+            // ============================================================================
+            float currentTime = Time.time;
+            float targetInterval = m_inferenceConfig.GetInferenceInterval();
+            float timeSinceLastInference = currentTime - m_lastInferenceTime;
+
+            // Check if we should drop this frame (too soon since last inference)
+            if (timeSinceLastInference < targetInterval)
+            {
+                // Drop frame - respecting target FPS
+                m_droppedFrames++;
+                if (m_sharedHUD != null)
+                {
+                    m_sharedHUD.ReportDroppedFrame();
+                }
+                yield break;
+            }
+
+            // Check if previous inference is still in progress (freeze frame)
+            if (m_inferenceInProgress)
+            {
+                m_frozenFrames++;
+                if (m_sharedHUD != null)
+                {
+                    m_sharedHUD.ReportFrozenFrame();
+                }
+                yield break;
+            }
+
+            // Mark inference as in progress
+            m_inferenceInProgress = true;
+            m_lastInferenceTime = currentTime;
+
             [DllImport("OVRPlugin", CallingConvention = CallingConvention.Cdecl)]
             static extern OVRPlugin.Result ovrp_GetNodePoseStateAtTime(double time, OVRPlugin.Node nodeId, out OVRPlugin.PoseStatef nodePoseState);
             if (!ovrp_GetNodePoseStateAtTime(OVRPlugin.GetTimeInSeconds(), OVRPlugin.Node.Head, out _).IsSuccess())
             {
                 Debug.Log("ovrp_GetNodePoseStateAtTime failed, which means 'm_cameraAccess.GetCameraPose()' is not reliable, skipping.");
+                m_inferenceInProgress = false;
                 yield break;
             }
 
@@ -82,6 +161,10 @@ namespace PassthroughCameraSamples.PoseEstimation
 
             // Run server inference
             yield return RunServerInference(targetTexture);
+
+            // Mark inference as complete
+            m_inferenceInProgress = false;
+            m_totalFrames++;
 
             // Checking if spatial anchor is tracked ensures skeleton is placed at correct world space positions
             if (!m_cameraAccess.IsPlaying || m_poseManager.m_spatialAnchor == null || !m_poseManager.m_spatialAnchor.IsTracked)
@@ -205,16 +288,20 @@ namespace PassthroughCameraSamples.PoseEstimation
                 }
             }
 
-            // 2. Encode texture as JPEG
-            byte[] jpegBytes = tex2D.EncodeToJPG(90);
+            // 2. Encode texture as JPEG (use configurable quality from InferenceConfig)
+            int jpegQuality = m_inferenceConfig.jpegQuality;
+            byte[] jpegBytes = tex2D.EncodeToJPG(jpegQuality);
             int uploadBytes = jpegBytes.Length;
-            Debug.Log($"[POSE SERVER] Encoded JPEG: {uploadBytes} bytes ({tex2D.width}x{tex2D.height})");
+            Debug.Log($"[POSE SERVER] Encoded JPEG (quality={jpegQuality}): {uploadBytes} bytes ({tex2D.width}x{tex2D.height})");
 
             // 3. Create multipart form POST
             List<IMultipartFormSection> formData = new List<IMultipartFormSection>();
             formData.Add(new MultipartFormFileSection("image", jpegBytes, "frame.jpg", "image/jpeg"));
 
-            UnityWebRequest request = UnityWebRequest.Post(m_serverUrl, formData);
+            // Use InferenceConfig to build URL (with fallback to legacy m_serverUrl)
+            string serverUrl = !string.IsNullOrEmpty(m_serverUrl) ? m_serverUrl : m_inferenceConfig.BuildUrl();
+
+            UnityWebRequest request = UnityWebRequest.Post(serverUrl, formData);
 
             // Add HTTP headers (including timing data from previous frame)
             request.SetRequestHeader("X-Scene-Name", "PoseEstimation");
@@ -228,6 +315,7 @@ namespace PassthroughCameraSamples.PoseEstimation
             request.SetRequestHeader("X-Parse-Ms", m_lastParseMs.ToString("F1"));
             request.SetRequestHeader("X-Upload-Bytes", m_lastUploadBytes.ToString());
             request.SetRequestHeader("X-Download-Bytes", m_lastDownloadBytes.ToString());
+            request.SetRequestHeader("X-Download-Bytes-Compressed", m_lastDownloadBytesCompressed.ToString());
 
             Debug.Log($"[POSE SEND] Sending frame {m_frameId} to server...");
 
@@ -256,7 +344,8 @@ namespace PassthroughCameraSamples.PoseEstimation
                 Debug.LogError($"[POSE SERVER] Inference failed: {request.error}");
                 Debug.LogError($"[POSE SERVER] Result type: {request.result}");
                 Debug.LogError($"[POSE SERVER] Response code: {request.responseCode}");
-                Debug.LogError($"[POSE SERVER] URL was: {m_serverUrl}");
+                Debug.LogError($"[POSE SERVER] URL was: {serverUrl}");
+                m_inferenceInProgress = false;  // Release lock on error
                 yield break;
             }
 
@@ -339,7 +428,11 @@ namespace PassthroughCameraSamples.PoseEstimation
             float downloadMs = Mathf.Max(0f, e2eMs - uploadMs - serverProcMs - parseMs);
 
             Debug.Log($"[TIMING] E2E={e2eMs:F0}ms (upload={uploadMs:F0}ms server={serverProcMs:F0}ms download={downloadMs:F0}ms parse={parseMs:F0}ms)");
-            Debug.Log($"[BYTES] Upload={uploadBytes} Download={downloadBytes}");
+
+            // Log both compressed and uncompressed sizes
+            int uncompressedBytes = System.Text.Encoding.UTF8.GetByteCount(request.downloadHandler.text);
+            float compressionRatio = downloadBytes > 0 ? (float)uncompressedBytes / downloadBytes : 1f;
+            Debug.Log($"[BYTES] Upload={uploadBytes} Download={downloadBytes}B (compressed), {uncompressedBytes}B (uncompressed), {compressionRatio:F2}x compression");
 
             // Detailed parse verification logs
             Debug.Log($"[POSE PARSE] skeleton null={response.skeleton == null}");
@@ -390,53 +483,53 @@ namespace PassthroughCameraSamples.PoseEstimation
             }
 
             // 7. Update HUD with inference metrics
-            if (m_inferenceHUD != null)
+            // Compute average detection confidence
+            float avgConfidence = 0f;
+            if (response.detections != null && response.detections.detections != null && response.detections.detections.Length > 0)
             {
-                // Compute average detection confidence
-                float avgConfidence = 0f;
-                if (response.detections != null && response.detections.detections != null && response.detections.detections.Length > 0)
+                float sum = 0f;
+                foreach (var det in response.detections.detections)
                 {
-                    float sum = 0f;
-                    foreach (var det in response.detections.detections)
-                    {
-                        sum += det.confidence;
-                    }
-                    avgConfidence = sum / response.detections.detections.Length;
+                    sum += det.confidence;
                 }
+                avgConfidence = sum / response.detections.detections.Length;
+            }
 
-                // Compute average keypoint confidence
-                float keypointAvgConf = 0f;
-                if (response.skeleton != null && response.skeleton.persons != null && response.skeleton.persons.Count > 0)
+            // Compute average keypoint confidence
+            float keypointAvgConf = 0f;
+            if (response.skeleton != null && response.skeleton.persons != null && response.skeleton.persons.Count > 0)
+            {
+                List<float> allScores = new List<float>();
+                foreach (var person in response.skeleton.persons)
                 {
-                    List<float> allScores = new List<float>();
-                    foreach (var person in response.skeleton.persons)
+                    if (person != null && person.keypoints != null)
                     {
-                        if (person != null && person.keypoints != null)
+                        foreach (var kp in person.keypoints)
                         {
-                            foreach (var kp in person.keypoints)
+                            if (kp.score > 0f)
                             {
-                                if (kp.score > 0f)
-                                {
-                                    allScores.Add(kp.score);
-                                }
+                                allScores.Add(kp.score);
                             }
                         }
                     }
-                    if (allScores.Count > 0)
-                    {
-                        float sum = 0f;
-                        foreach (var score in allScores)
-                        {
-                            sum += score;
-                        }
-                        keypointAvgConf = sum / allScores.Count;
-                    }
                 }
+                if (allScores.Count > 0)
+                {
+                    float sum = 0f;
+                    foreach (var score in allScores)
+                    {
+                        sum += score;
+                    }
+                    keypointAvgConf = sum / allScores.Count;
+                }
+            }
 
-                // Get detection count (number of persons)
-                int detectionCount = response.skeleton?.persons?.Count ?? 0;
+            // Get detection count (number of persons)
+            int detectionCount = response.skeleton?.persons?.Count ?? 0;
 
-                // Update HUD with detailed breakdown
+            // Update legacy HUD
+            if (m_inferenceHUD != null)
+            {
                 m_inferenceHUD.UpdateHUD(
                     e2eMs,
                     uploadMs,
@@ -444,6 +537,25 @@ namespace PassthroughCameraSamples.PoseEstimation
                     downloadMs,
                     parseMs,
                     uploadBytes,
+                    uncompressedBytes,
+                    downloadBytes,  // Compressed size
+                    detectionCount,
+                    avgConfidence,
+                    keypointAvgConf
+                );
+            }
+
+            // Update SharedInferenceHUD with metrics (NEW)
+            if (m_sharedHUD != null)
+            {
+                m_sharedHUD.UpdateMetrics(
+                    e2eMs,
+                    uploadMs,
+                    serverProcMs,
+                    downloadMs,
+                    parseMs,
+                    uploadBytes,
+                    uncompressedBytes,
                     downloadBytes,
                     detectionCount,
                     avgConfidence,
@@ -457,7 +569,8 @@ namespace PassthroughCameraSamples.PoseEstimation
             m_lastDownloadMs = downloadMs;
             m_lastParseMs = parseMs;
             m_lastUploadBytes = uploadBytes;
-            m_lastDownloadBytes = downloadBytes;
+            m_lastDownloadBytes = uncompressedBytes;  // Uncompressed size for Excel logging
+            m_lastDownloadBytesCompressed = downloadBytes;  // Compressed size for Excel logging
         }
 
         // ============================================================================
