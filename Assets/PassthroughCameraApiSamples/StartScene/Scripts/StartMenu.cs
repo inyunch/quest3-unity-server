@@ -35,8 +35,8 @@ namespace PassthroughCameraSamples.StartScene
             {
                 var path = UnityEngine.SceneManagement.SceneUtility.GetScenePathByBuildIndex(sceneIndex);
 
-                // Inference modes (detection, pose, depth)
-                if (path.Contains("MultiObjectDetection") || path.Contains("PoseEstimation") || path.Contains("DepthEstimation"))
+                // Inference modes (detection, pose, depth, segmentation)
+                if (path.Contains("MultiObjectDetection") || path.Contains("PoseEstimation") || path.Contains("DepthEstimation") || path.Contains("Segmentation"))
                 {
                     inferenceScenes.Add(new Tuple<int, string>(sceneIndex, path));
                 }
@@ -70,6 +70,8 @@ namespace PassthroughCameraSamples.StartScene
                         sceneName = "Pose Estimation (5 FPS)";
                     else if (sceneName.Contains("DepthEstimation"))
                         sceneName = "Depth Estimation (5 FPS)";
+                    else if (sceneName.Contains("Segmentation"))
+                        sceneName = "Segmentation (RGB-D)";
 
                     _ = uiBuilder.AddButton(sceneName, () => LoadScene(scene.Item1), -1, DebugUIBuilder.DEBUG_PANE_LEFT);
                 }

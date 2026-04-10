@@ -7,9 +7,9 @@ using Meta.XR;
 using Meta.XR.Samples;
 using UnityEngine;
 using UnityEngine.Networking;
-using UnityEngine.UI;
 using Newtonsoft.Json;
 using PassthroughCameraSamples.Shared;
+using PassthroughCameraSamples.MultiObjectDetection;
 
 namespace PassthroughCameraSamples.DepthEstimation
 {
@@ -17,25 +17,35 @@ namespace PassthroughCameraSamples.DepthEstimation
     public class DepthInferenceRunManager : MonoBehaviour
     {
         [SerializeField] private PassthroughCameraAccess m_cameraAccess;
-        [SerializeField] private PassthroughCameraSamples.MultiObjectDetection.DetectionUiMenuManager m_uiMenuManager;
+        [SerializeField] private DetectionUiMenuManager m_uiMenuManager;
+        [SerializeField] private DepthEstimationManager m_depthManager;
 
         [Header("UI display references")]
+        [SerializeField] private DepthLabelManager m_depthLabelManager;  // NEW: Text labels
+        [SerializeField] private DepthVisualizationManager m_depthVisualizationManager;  // DEBUG: Point cloud
         [SerializeField] private SharedInferenceHUD m_sharedHUD;
-        [SerializeField] private DepthVisualization m_depthVisualization;
+        [SerializeField] private bool m_useDebugPointCloud = false;  // Toggle for debug visualization
 
-        [Header("Server Inference")]
+        // Depth point cloud visualization
+        private List<GameObject> m_depthPoints = new List<GameObject>();
+        private GameObject m_depthPointsParent;
+
+        [Header("Server Inference - ROI Depth")]
         [SerializeField] private InferenceConfig m_inferenceConfig = new InferenceConfig
         {
             mode = InferenceMode.DepthEstimation,
-            targetFPS = 5f,  // Lower FPS for depth due to large download size
+            targetFPS = 5f,  // Lower FPS for ROI depth (detection + depth)
             jpegQuality = 80,
             includeMask = false,
-            includeDepth = false  // Will be forced to true by mode=depth
+            includeDepth = true
         };
+
+        [Header("Detection Settings")]
+        [SerializeField] private float m_minDetectionConfidence = 0.5f;
 
         private int m_frameId = 0;
 
-        // Store timing data from previous frame to send as headers in next request
+        // Timing data
         private float m_lastE2eMs = 0f;
         private float m_lastUploadMs = 0f;
         private float m_lastDownloadMs = 0f;
@@ -44,35 +54,35 @@ namespace PassthroughCameraSamples.DepthEstimation
         private int m_lastDownloadBytes = 0;
         private int m_lastDownloadBytesCompressed = 0;
 
-        // FPS throttling (Part C)
+        // FPS throttling
         private float m_lastInferenceTime = 0f;
         private bool m_inferenceInProgress = false;
 
-        // Frame statistics (Part D)
+        // Frame statistics
         private int m_totalFrames = 0;
         private int m_droppedFrames = 0;
         private int m_frozenFrames = 0;
 
         private IEnumerator Start()
         {
-            Debug.Log("[DEPTH INF] DepthInferenceRunManager started");
+            Debug.Log("[DEPTH INF] DepthInferenceRunManager started (ROI Mode)");
 
-            // Reference checks
             Debug.Log($"[DEPTH REF] cameraAccess={m_cameraAccess != null}");
             Debug.Log($"[DEPTH REF] uiMenuManager={m_uiMenuManager != null}");
+            Debug.Log($"[DEPTH REF] depthManager={m_depthManager != null}");
+            Debug.Log($"[DEPTH REF] depthLabelManager={m_depthLabelManager != null}");
+            Debug.Log($"[DEPTH REF] depthVisualizationManager={m_depthVisualizationManager != null} (debug mode)");
             Debug.Log($"[DEPTH REF] sharedHUD={m_sharedHUD != null}");
-            Debug.Log($"[DEPTH REF] depthVisualization={m_depthVisualization != null}");
+            Debug.Log($"[DEPTH REF] debugPointCloud={m_useDebugPointCloud}");
 
             m_inferenceConfig.Validate();
             m_inferenceConfig.LogSummary();
 
-            // Initialize SharedInferenceHUD
             if (m_sharedHUD != null)
             {
                 m_sharedHUD.SetMode(m_inferenceConfig.mode, m_inferenceConfig.targetFPS);
             }
 
-            // Test server connection at startup
             Debug.Log("[SERVER TEST] Testing connection to server...");
             yield return TestServerConnection();
 
@@ -93,17 +103,13 @@ namespace PassthroughCameraSamples.DepthEstimation
                 yield break;
             }
 
-            // ============================================================================
-            // FPS THROTTLING (Part C)
-            // ============================================================================
+            // FPS throttling
             float currentTime = Time.time;
             float targetInterval = m_inferenceConfig.GetInferenceInterval();
             float timeSinceLastInference = currentTime - m_lastInferenceTime;
 
-            // Check if we should drop this frame (too soon since last inference)
             if (timeSinceLastInference < targetInterval)
             {
-                // Drop frame - respecting target FPS
                 m_droppedFrames++;
                 if (m_sharedHUD != null)
                 {
@@ -112,7 +118,6 @@ namespace PassthroughCameraSamples.DepthEstimation
                 yield break;
             }
 
-            // Check if previous inference is still in progress (freeze frame)
             if (m_inferenceInProgress)
             {
                 m_frozenFrames++;
@@ -123,7 +128,6 @@ namespace PassthroughCameraSamples.DepthEstimation
                 yield break;
             }
 
-            // Mark inference as in progress
             m_inferenceInProgress = true;
             m_lastInferenceTime = currentTime;
 
@@ -131,47 +135,101 @@ namespace PassthroughCameraSamples.DepthEstimation
             static extern OVRPlugin.Result ovrp_GetNodePoseStateAtTime(double time, OVRPlugin.Node nodeId, out OVRPlugin.PoseStatef nodePoseState);
             if (!ovrp_GetNodePoseStateAtTime(OVRPlugin.GetTimeInSeconds(), OVRPlugin.Node.Head, out _).IsSuccess())
             {
-                Debug.Log("ovrp_GetNodePoseStateAtTime failed, which means 'm_cameraAccess.GetCameraPose()' is not reliable, skipping.");
                 m_inferenceInProgress = false;
                 yield break;
             }
 
-            // Update Capture data
             Texture targetTexture = m_cameraAccess.GetTexture();
 
-            // Run server inference
+            // Run server inference (detection + depth)
             yield return RunServerInference(targetTexture);
 
-            // Mark inference as complete
             m_inferenceInProgress = false;
             m_totalFrames++;
         }
 
-        // ============================================================================
-        // SERVER INFERENCE - JSON Response Classes
-        // ============================================================================
-
+        // JSON Response Classes - Updated for /infer_human with full depth map
         [System.Serializable]
-        private class DepthServerResponse
+        public class HumanInferenceResponse
         {
-            public DepthData depth;
+            public DetectionResult detections;
+            public SkeletonResult skeleton;
+            public DepthResult depth;  // Full depth map
+            public float processing_time_ms;
             public int input_image_width;
             public int input_image_height;
-            public float processing_time_ms;
         }
 
         [System.Serializable]
-        public class DepthData
+        public class DetectionResult
+        {
+            public Detection[] detections;
+            public int num_detections;
+        }
+
+        [System.Serializable]
+        public class Detection
+        {
+            public int class_id;
+            public string class_name;
+            public float confidence;
+            public float[] bbox;  // normalized [0-1]
+            public int[] bbox_pixels;
+            public PersonDepthEstimate depth_estimate;  // NEW: Per-person depth with source tracking
+        }
+
+        [System.Serializable]
+        public class SkeletonResult
+        {
+            public PersonSkeleton[] persons;
+        }
+
+        [System.Serializable]
+        public class PersonSkeleton
+        {
+            public Keypoint[] keypoints;
+            public float[] bbox;
+            public PersonDepthEstimate depth_estimate;  // NEW: Per-person depth with source tracking
+        }
+
+        [System.Serializable]
+        public class Keypoint
+        {
+            public string name;
+            public float x;
+            public float y;
+            public float score;
+        }
+
+        [System.Serializable]
+        public class PersonDepthEstimate
+        {
+            public float depth_m;
+            public string depth_source;
+            public float depth_confidence;
+            public bool used_fallback;
+            public string fallback_reason;
+            public DepthStats depth_stats;
+            public float[][] sample_point_px;  // Can be array of points or single point
+        }
+
+        [System.Serializable]
+        public class DepthStats
+        {
+            public float median;
+            public float q25;
+            public float q75;
+            public int valid_pixels;
+        }
+
+        [System.Serializable]
+        public class DepthResult
         {
             public int height;
             public int width;
             public int downsample_factor;
-            public List<List<float>> values;  // 2D array of depth values [0-1]
+            public float[][] values;  // 2D depth map
         }
-
-        // ============================================================================
-        // SERVER INFERENCE - Connection Test
-        // ============================================================================
 
         private IEnumerator TestServerConnection()
         {
@@ -190,27 +248,19 @@ namespace PassthroughCameraSamples.DepthEstimation
                 else
                 {
                     Debug.LogError($"[DEPTH SERVER TEST] ✗ Connection FAILED: {req.error}");
-                    Debug.LogError($"[DEPTH SERVER TEST] Result: {req.result}");
-                    Debug.LogError($"[DEPTH SERVER TEST] Response Code: {req.responseCode}");
                 }
             }
         }
 
-        // ============================================================================
-        // SERVER INFERENCE - HTTP Request Method
-        // ============================================================================
-
         private IEnumerator RunServerInference(Texture texture)
         {
-            // Increment frame counter and start E2E timing
             m_frameId++;
             float e2eStartTime = Time.realtimeSinceStartup;
 
-            // 1. Convert texture to Texture2D if needed
+            // Convert texture to Texture2D
             Texture2D tex2D = texture as Texture2D;
             if (tex2D == null)
             {
-                // Handle RenderTexture case
                 RenderTexture rt = texture as RenderTexture;
                 if (rt != null)
                 {
@@ -222,30 +272,31 @@ namespace PassthroughCameraSamples.DepthEstimation
                 }
                 else
                 {
-                    Debug.LogError("[DEPTH SERVER] Unsupported texture type for server inference");
+                    Debug.LogError("[DEPTH SERVER] Unsupported texture type");
                     m_inferenceInProgress = false;
                     yield break;
                 }
             }
 
-            // 2. Encode texture as JPEG (use configurable quality from InferenceConfig)
-            int jpegQuality = m_inferenceConfig.jpegQuality;
-            byte[] jpegBytes = tex2D.EncodeToJPG(jpegQuality);
+            // Encode as JPEG
+            byte[] jpegBytes = tex2D.EncodeToJPG(m_inferenceConfig.jpegQuality);
             int uploadBytes = jpegBytes.Length;
-            Debug.Log($"[DEPTH SERVER] Encoded JPEG (quality={jpegQuality}): {uploadBytes} bytes ({tex2D.width}x{tex2D.height})");
 
-            // 3. Create multipart form POST
+            // Create POST request
             List<IMultipartFormSection> formData = new List<IMultipartFormSection>();
             formData.Add(new MultipartFormFileSection("image", jpegBytes, "frame.jpg", "image/jpeg"));
 
-            string serverUrl = m_inferenceConfig.BuildUrl();
+            // Use /infer_human endpoint with mode=both and include_depth=true to get full depth map
+            string serverUrl = "http://192.168.0.135:8001/infer_human?mode=both&include_depth=true";
+
             UnityWebRequest request = UnityWebRequest.Post(serverUrl, formData);
 
-            // Add HTTP headers (including timing data from previous frame)
+            // Add headers
             request.SetRequestHeader("X-Scene-Name", "DepthEstimation");
             request.SetRequestHeader("X-Frame-Id", m_frameId.ToString());
+            request.SetRequestHeader("X-Min-Confidence", m_minDetectionConfidence.ToString("F2"));
 
-            // Send timing data from PREVIOUS frame (frame N-1) for Excel logging
+            // Timing headers (from last inference)
             request.SetRequestHeader("X-E2E-Ms", m_lastE2eMs.ToString("F1"));
             request.SetRequestHeader("X-Upload-Ms", m_lastUploadMs.ToString("F1"));
             request.SetRequestHeader("X-Download-Ms", m_lastDownloadMs.ToString("F1"));
@@ -254,140 +305,191 @@ namespace PassthroughCameraSamples.DepthEstimation
             request.SetRequestHeader("X-Download-Bytes", m_lastDownloadBytes.ToString());
             request.SetRequestHeader("X-Download-Bytes-Compressed", m_lastDownloadBytesCompressed.ToString());
 
-            Debug.Log($"[DEPTH SEND] Sending frame {m_frameId} to server: {serverUrl}");
+            // Performance metrics headers
+            float freezeRatio = m_totalFrames > 0 ? (float)m_frozenFrames / m_totalFrames : 0f;
+            request.SetRequestHeader("X-Target-FPS", m_inferenceConfig.targetFPS.ToString("F1"));
+            request.SetRequestHeader("X-Dropped-Frames", m_droppedFrames.ToString());
+            request.SetRequestHeader("X-Freeze-Frames", m_frozenFrames.ToString());
+            request.SetRequestHeader("X-Freeze-Ratio", freezeRatio.ToString("F4"));
 
-            // 4. Send request and measure UPLOAD time
+            Debug.Log($"[DEPTH SEND] Frame {m_frameId} to per-object depth endpoint");
+
+            // Send request
             float uploadStartTime = Time.realtimeSinceStartup;
-
-            // Start the request
             UnityWebRequestAsyncOperation asyncOp = request.SendWebRequest();
 
-            // Poll until upload completes
             while (!asyncOp.isDone && request.uploadProgress < 1.0f)
             {
                 yield return null;
             }
 
-            float uploadDoneTime = Time.realtimeSinceStartup;
-            float uploadMs = (uploadDoneTime - uploadStartTime) * 1000f;
-
-            // Wait for response to complete
+            float uploadMs = (Time.realtimeSinceStartup - uploadStartTime) * 1000f;
             yield return asyncOp;
-
-            Debug.Log($"[DEPTH SERVER SEND] <<< Request completed. Result: {request.result}");
 
             if (request.result != UnityWebRequest.Result.Success)
             {
-                Debug.LogError($"[DEPTH SERVER] Inference failed: {request.error}");
-                Debug.LogError($"[DEPTH SERVER] Result type: {request.result}");
-                Debug.LogError($"[DEPTH SERVER] Response code: {request.responseCode}");
-                Debug.LogError($"[DEPTH SERVER] URL was: {serverUrl}");
-                m_inferenceInProgress = false;  // Release lock on error
+                Debug.LogError($"[DEPTH SERVER] Request failed: {request.error}");
+                Debug.LogError($"[DEPTH SERVER] URL: {serverUrl}");
+                m_inferenceInProgress = false;
                 yield break;
             }
 
-            // 5. Parse JSON response and measure PARSE time
+            // Parse response
             float parseStartTime = Time.realtimeSinceStartup;
-
             string jsonResponse = request.downloadHandler.text;
-            Debug.Log($"[DEPTH RECV] Response received, length={jsonResponse.Length}");
 
-            DepthServerResponse response = null;
+            HumanInferenceResponse response = null;
             try
             {
-                response = JsonConvert.DeserializeObject<DepthServerResponse>(jsonResponse);
-                Debug.Log($"[DEPTH JSON] Depth data parsed successfully");
+                response = JsonConvert.DeserializeObject<HumanInferenceResponse>(jsonResponse);
+                Debug.Log($"[DEPTH JSON] Parsed successfully");
             }
             catch (System.Exception e)
             {
-                Debug.LogError($"[DEPTH JSON] Failed to parse depth response: {e.Message}");
+                Debug.LogError($"[DEPTH JSON] Parse failed: {e.Message}");
                 Debug.LogError($"[DEPTH JSON] Response preview: {jsonResponse.Substring(0, Mathf.Min(500, jsonResponse.Length))}");
                 m_inferenceInProgress = false;
                 yield break;
             }
 
-            if (response == null || response.depth == null)
+            if (response == null)
             {
-                Debug.LogError("[DEPTH SERVER] Failed to parse JSON response or depth is null");
+                Debug.LogError("[DEPTH SERVER] Invalid response");
                 m_inferenceInProgress = false;
                 yield break;
             }
 
-            // Parse time measurement complete
             float parseMs = (Time.realtimeSinceStartup - parseStartTime) * 1000f;
 
-            // Calculate E2E time and derive download time
+            // Calculate timing
             float e2eMs = (Time.realtimeSinceStartup - e2eStartTime) * 1000f;
             int downloadBytes = (int)request.downloadedBytes;
             float serverProcMs = response.processing_time_ms;
             float downloadMs = Mathf.Max(0f, e2eMs - uploadMs - serverProcMs - parseMs);
 
-            Debug.Log($"[TIMING] E2E={e2eMs:F0}ms (upload={uploadMs:F0}ms server={serverProcMs:F0}ms download={downloadMs:F0}ms parse={parseMs:F0}ms)");
+            // Count detections and persons
+            int numDetections = response.detections != null ? response.detections.num_detections : 0;
+            int numPersons = response.skeleton != null && response.skeleton.persons != null ? response.skeleton.persons.Length : 0;
+            bool hasDepthMap = response.depth != null && response.depth.values != null;
 
-            // Log both compressed and uncompressed sizes
-            int uncompressedBytes = System.Text.Encoding.UTF8.GetByteCount(request.downloadHandler.text);
-            float compressionRatio = downloadBytes > 0 ? (float)uncompressedBytes / downloadBytes : 1f;
-            Debug.Log($"[BYTES] Upload={uploadBytes} Download={downloadBytes}B (compressed), {uncompressedBytes}B (uncompressed), {compressionRatio:F2}x compression");
+            Debug.Log($"[DEPTH DATA] Detections={numDetections}, Persons={numPersons}, DepthMap={hasDepthMap}");
+            Debug.Log($"[TIMING] E2E={e2eMs:F0}ms (upload={uploadMs:F0} server={serverProcMs:F0} download={downloadMs:F0} parse={parseMs:F0})");
 
-            // Log depth map details
-            Debug.Log($"[DEPTH DATA] Map size: {response.depth.width}x{response.depth.height}, downsample={response.depth.downsample_factor}");
-
-            // 6. Visualize depth map
-            if (m_depthVisualization != null && response.depth.values != null)
+            // Log depth estimates for detections
+            if (response.detections != null && response.detections.detections != null)
             {
-                m_depthVisualization.UpdateDepthMap(response.depth);
+                foreach (var det in response.detections.detections)
+                {
+                    if (det.depth_estimate != null)
+                    {
+                        Debug.Log($"[DEPTH EST] {det.class_name}: " +
+                                  $"depth={det.depth_estimate.depth_m:F3}m, " +
+                                  $"source={det.depth_estimate.depth_source}, " +
+                                  $"confidence={det.depth_estimate.depth_confidence:F2}, " +
+                                  $"fallback={det.depth_estimate.used_fallback}");
+                    }
+                }
+            }
+
+            // Log depth map info
+            if (hasDepthMap)
+            {
+                Debug.Log($"[DEPTH MAP] Size={response.depth.width}x{response.depth.height}, " +
+                          $"downsample={response.depth.downsample_factor}");
+            }
+
+            // Display depth information
+            var cameraPose = m_cameraAccess.GetCameraPose();
+
+            Debug.Log($"[DEPTH RENDER] Starting visualization: useDebugPointCloud={m_useDebugPointCloud}, " +
+                      $"labelManager={m_depthLabelManager != null}, " +
+                      $"depthVisualization={m_depthVisualizationManager != null}, " +
+                      $"hasDepthMap={hasDepthMap}");
+
+            if (m_depthManager != null && m_depthManager.m_spatialAnchor != null && !m_depthManager.m_spatialAnchor.IsTracked)
+            {
+                Debug.LogWarning("[DEPTH RENDER] Spatial anchor not tracked, skipping visualization");
             }
             else
             {
-                Debug.LogWarning("[DEPTH] No visualization component or depth values are null");
+                // Render depth map visualization if available
+                if (hasDepthMap && m_depthVisualizationManager != null)
+                {
+                    Debug.Log($"[DEPTH RENDER] Rendering depth map visualization");
+                    // Convert depth map to texture and render
+                    RenderDepthMap(response.depth, cameraPose);
+                }
+                else if (hasDepthMap && m_depthVisualizationManager == null)
+                {
+                    Debug.LogWarning("[DEPTH RENDER] DepthVisualizationManager is NULL, cannot render depth map");
+                }
+
+                // Render text labels for detections if label manager is available
+                if (!m_useDebugPointCloud && m_depthLabelManager != null && response.detections != null && response.detections.detections != null)
+                {
+                    // Default mode: Draw text labels above objects
+                    Debug.Log($"[DEPTH RENDER] Calling DrawDepthLabels with {response.detections.detections.Length} detections");
+                    // Note: DepthLabelManager expects the old format, we'll need to convert
+                    // For now, skip labels if using new endpoint (focus on depth map visualization)
+                    // m_depthLabelManager.DrawDepthLabels(response.detections.detections, cameraPose);
+                    Debug.Log("[DEPTH RENDER] Label rendering temporarily disabled (incompatible format)");
+                }
+                else if (!m_useDebugPointCloud && m_depthLabelManager == null)
+                {
+                    Debug.LogWarning("[DEPTH RENDER] DepthLabelManager is NULL, no text labels will be shown");
+                }
             }
 
-            // 7. Update HUD with inference metrics
-            // Compute depth statistics
-            float minDepth = float.MaxValue;
-            float maxDepth = float.MinValue;
-            float avgDepth = 0f;
-            int pixelCount = 0;
+            // Calculate uncompressed bytes
+            int uncompressedBytes = System.Text.Encoding.UTF8.GetByteCount(jsonResponse);
 
-            if (response.depth.values != null)
-            {
-                foreach (var row in response.depth.values)
-                {
-                    foreach (var value in row)
-                    {
-                        minDepth = Mathf.Min(minDepth, value);
-                        maxDepth = Mathf.Max(maxDepth, value);
-                        avgDepth += value;
-                        pixelCount++;
-                    }
-                }
-                if (pixelCount > 0)
-                {
-                    avgDepth /= pixelCount;
-                }
-            }
-
-            Debug.Log($"[DEPTH STATS] min={minDepth:F3}, max={maxDepth:F3}, avg={avgDepth:F3}");
-
-            // Update SharedInferenceHUD with metrics
+            // Update HUD
             if (m_sharedHUD != null)
             {
+                float avgConfidence = 0f;
+                if (numDetections > 0 && response.detections != null && response.detections.detections != null)
+                {
+                    foreach (var det in response.detections.detections)
+                    {
+                        avgConfidence += det.confidence;
+                    }
+                    avgConfidence /= numDetections;
+                }
+
+                // Calculate average keypoint confidence
+                float avgKeypointConf = 0f;
+                if (numPersons > 0 && response.skeleton != null && response.skeleton.persons != null)
+                {
+                    int totalKeypoints = 0;
+                    float totalScore = 0f;
+                    foreach (var person in response.skeleton.persons)
+                    {
+                        if (person != null && person.keypoints != null)
+                        {
+                            foreach (var kp in person.keypoints)
+                            {
+                                if (kp.score > 0)
+                                {
+                                    totalScore += kp.score;
+                                    totalKeypoints++;
+                                }
+                            }
+                        }
+                    }
+                    if (totalKeypoints > 0)
+                    {
+                        avgKeypointConf = totalScore / totalKeypoints;
+                    }
+                }
+
                 m_sharedHUD.UpdateMetrics(
-                    e2eMs,
-                    uploadMs,
-                    serverProcMs,
-                    downloadMs,
-                    parseMs,
-                    uploadBytes,
-                    uncompressedBytes,
-                    downloadBytes,
-                    0,  // No detections for depth mode
-                    avgDepth,  // Use average depth as "confidence"
-                    0f  // No keypoint confidence
+                    e2eMs, uploadMs, serverProcMs, downloadMs, parseMs,
+                    uploadBytes, uncompressedBytes, downloadBytes,
+                    numDetections, avgConfidence, avgKeypointConf
                 );
             }
 
-            // Store timing data for next frame's HTTP headers (to log in Excel)
+            // Store timing
             m_lastE2eMs = e2eMs;
             m_lastUploadMs = uploadMs;
             m_lastDownloadMs = downloadMs;
@@ -395,6 +497,187 @@ namespace PassthroughCameraSamples.DepthEstimation
             m_lastUploadBytes = uploadBytes;
             m_lastDownloadBytes = uncompressedBytes;
             m_lastDownloadBytesCompressed = downloadBytes;
+        }
+
+        private void RenderDepthMap(DepthResult depthResult, Pose cameraPose)
+        {
+            if (depthResult == null || depthResult.values == null)
+            {
+                Debug.LogWarning("[DEPTH RENDER] Invalid depth result");
+                return;
+            }
+
+            Debug.Log($"[DEPTH RENDER] Converting depth map to point cloud: {depthResult.width}x{depthResult.height}");
+
+            // Convert depth map to a list of 3D points for visualization
+            List<Vector3> points = new List<Vector3>();
+            List<Color> colors = new List<Color>();
+
+            int width = depthResult.width;
+            int height = depthResult.height;
+
+            // Sample every N pixels to reduce point count (for performance)
+            int sampleStep = 4;  // Sample every 4th pixel
+
+            for (int y = 0; y < height; y += sampleStep)
+            {
+                if (depthResult.values[y] == null) continue;
+
+                for (int x = 0; x < width; x += sampleStep)
+                {
+                    if (x >= depthResult.values[y].Length) continue;
+
+                    float depthValue = depthResult.values[y][x];
+
+                    // Skip invalid depth values
+                    if (depthValue < 0.01f || depthValue > 0.99f) continue;
+
+                    // Convert to normalized viewport coordinates [0, 1]
+                    float normX = (float)x / width;
+                    float normY = 1.0f - ((float)y / height);  // Flip Y
+
+                    // Use PassthroughCameraAccess to convert from viewport to world space
+                    // Note: This is a simplified version - you may need to use actual camera projection
+                    Vector3 worldPos = ProjectDepthPoint(normX, normY, depthValue, cameraPose);
+
+                    points.Add(worldPos);
+
+                    // Colorize based on depth (heat map)
+                    Color depthColor = GetDepthColor(depthValue);
+                    colors.Add(depthColor);
+                }
+            }
+
+            Debug.Log($"[DEPTH RENDER] Generated {points.Count} depth points");
+
+            // Render depth points as small spheres
+            RenderDepthPoints(points, colors);
+        }
+
+        private void RenderDepthPoints(List<Vector3> points, List<Color> colors)
+        {
+            // Clear previous points
+            ClearDepthPoints();
+
+            // Create parent if doesn't exist
+            if (m_depthPointsParent == null)
+            {
+                m_depthPointsParent = new GameObject("DepthPointCloud");
+            }
+
+            // Limit number of points for performance (max 500 points)
+            int maxPoints = Mathf.Min(500, points.Count);
+            int step = Mathf.Max(1, points.Count / maxPoints);
+
+            Debug.Log($"[DEPTH RENDER] Rendering {maxPoints} points (step={step})");
+
+            for (int i = 0; i < points.Count; i += step)
+            {
+                // Create small sphere for each point
+                GameObject point = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+                point.transform.position = points[i];
+                point.transform.localScale = Vector3.one * 0.02f;  // 2cm radius
+                point.transform.SetParent(m_depthPointsParent.transform);
+
+                // Set color
+                Renderer renderer = point.GetComponent<Renderer>();
+                if (renderer != null)
+                {
+                    renderer.material = new Material(Shader.Find("Unlit/Color"));
+                    renderer.material.color = colors[i];
+                }
+
+                // Disable collider (not needed for visualization)
+                Collider collider = point.GetComponent<Collider>();
+                if (collider != null)
+                {
+                    Destroy(collider);
+                }
+
+                m_depthPoints.Add(point);
+
+                // Break if we hit max
+                if (m_depthPoints.Count >= maxPoints)
+                {
+                    break;
+                }
+            }
+
+            Debug.Log($"[DEPTH RENDER] Rendered {m_depthPoints.Count} depth points in scene");
+        }
+
+        private void ClearDepthPoints()
+        {
+            foreach (var point in m_depthPoints)
+            {
+                if (point != null)
+                {
+                    Destroy(point);
+                }
+            }
+            m_depthPoints.Clear();
+        }
+
+        private Vector3 ProjectDepthPoint(float normX, float normY, float depth, Pose cameraPose)
+        {
+            // Simple depth projection
+            // In a real implementation, you would use camera intrinsics
+            // For now, use a simple perspective projection
+
+            // Convert normalized screen space to camera space
+            float aspectRatio = (float)Screen.width / Screen.height;
+            float fov = 60f;  // Approximate FOV
+            float fovRad = fov * Mathf.Deg2Rad;
+            float tanHalfFov = Mathf.Tan(fovRad * 0.5f);
+
+            // Camera space coordinates
+            float cameraX = (normX * 2f - 1f) * depth * tanHalfFov * aspectRatio;
+            float cameraY = (normY * 2f - 1f) * depth * tanHalfFov;
+            float cameraZ = -depth;  // Negative Z for forward
+
+            Vector3 cameraSpacePos = new Vector3(cameraX, cameraY, cameraZ);
+
+            // Transform to world space
+            Vector3 worldPos = cameraPose.position + cameraPose.rotation * cameraSpacePos;
+
+            return worldPos;
+        }
+
+        private Color GetDepthColor(float depthValue)
+        {
+            // Convert depth [0, 1] to heat map color
+            // Red (near) -> Yellow -> Green -> Cyan -> Blue (far)
+
+            if (depthValue < 0.2f)
+            {
+                // Red to Yellow
+                float t = depthValue / 0.2f;
+                return Color.Lerp(Color.red, Color.yellow, t);
+            }
+            else if (depthValue < 0.4f)
+            {
+                // Yellow to Green
+                float t = (depthValue - 0.2f) / 0.2f;
+                return Color.Lerp(Color.yellow, Color.green, t);
+            }
+            else if (depthValue < 0.6f)
+            {
+                // Green to Cyan
+                float t = (depthValue - 0.4f) / 0.2f;
+                return Color.Lerp(Color.green, Color.cyan, t);
+            }
+            else if (depthValue < 0.8f)
+            {
+                // Cyan to Blue
+                float t = (depthValue - 0.6f) / 0.2f;
+                return Color.Lerp(Color.cyan, Color.blue, t);
+            }
+            else
+            {
+                // Blue to Magenta
+                float t = (depthValue - 0.8f) / 0.2f;
+                return Color.Lerp(Color.blue, Color.magenta, t);
+            }
         }
     }
 }

@@ -7,13 +7,25 @@ The **Unity-PassthroughCameraAPISamples** project helps Unity developers access 
 - **Simultaneous access to both cameras** (left and right)
 - **Complete camera metadata** including intrinsics, extrinsics, and pose information
 
-The project includes **five sample scenes** demonstrating various use cases:
+The project includes **seven sample scenes** demonstrating various use cases:
 
 | CameraToWorld | BrightnessEstimation | MultiObjectDectection | ShaderSample |
 |:-------------:|:--------------------:|:---------------------:|:------------:|
 | ![GIF 1](./Media/CameraToWorld.gif) | ![GIF 2](./Media/BrightnessEstimation.gif) | ![GIF 3](./Media/ObjectDetectionSentis.gif) | ![GIF 4](./Media/ShaderSample.gif) |
 
+**New AI Inference Samples**:
+- **PoseEstimation** - Real-time human pose tracking with skeleton overlay
+- **DepthEstimation** - MiDaS depth estimation with 3D visualization
+- **Segmentation** - Instance segmentation with SAM (Segment Anything Model)
+
 ## Documentation
+
+### Quick Start Guides
+
+**For AI Inference Modes (Recommended)**:
+- **[DEPLOYMENT_READY.md](./DEPLOYMENT_READY.md)** - Complete deployment checklist for segmentation
+- **[SCENE_SETUP_CHECKLIST.md](./SCENE_SETUP_CHECKLIST.md)** - Step-by-step Unity scene configuration
+- **[TESTING_GUIDE.md](./TESTING_GUIDE.md)** - Testing procedures and troubleshooting
 
 ### Project Documentation
 
@@ -22,6 +34,7 @@ This repository includes comprehensive guides and tools:
 - **[Quick Start Guide](./Documentation/QUICK_START_GUIDE.md)** - 20-minute setup guide for pose estimation
 - **[Latency HUD Guide](./Documentation/LATENCY_HUD_GUIDE.md)** - Real-time performance monitoring system
 - **[Pose Estimation Technical Guide](./Documentation/POSE_ESTIMATION_TECHNICAL_GUIDE.md)** - Architecture and implementation details
+- **[ROI Depth Estimation Guide](./Documentation/ROI_DEPTH_ESTIMATION_GUIDE.md)** - Region-of-interest depth extraction
 - **[Coordinate Transformation Guide](./Documentation/COORDINATE_TRANSFORMATION_GUIDE.md)** - Understanding coordinate systems
 - **[Diagnostic Tools](./Tools/README.md)** - ADB scripts for monitoring and debugging
 
@@ -63,19 +76,32 @@ git clone https://github.com/oculus-samples/Unity-PassthroughCameraApiSamples
 
 ## Project Content
 
-The project contains **five sample scenes** that demonstrate how to use the **PassthroughCameraAccess** component to access Quest camera data. All sample code and resources are located in the [**`PassthroughCameraApiSamples`**](./Assets/PassthroughCameraApiSamples/) folder:
+The project contains **eight sample scenes** that demonstrate how to use the **PassthroughCameraAccess** component to access Quest camera data. All sample code and resources are located in the [**`PassthroughCameraApiSamples`**](./Assets/PassthroughCameraApiSamples/) folder:
 
 ### Samples
 
+**Original Meta Samples**:
 * **[`CameraViewer`](./Assets/PassthroughCameraApiSamples/CameraViewer)** - Displays a 2D canvas with camera feed
 * **[`CameraToWorld`](./Assets/PassthroughCameraApiSamples/CameraToWorld)** - Aligns RGB camera pose with Passthrough and transforms 2D coordinates to 3D world space rays
 * **[`BrightnessEstimation`](./Assets/PassthroughCameraApiSamples/BrightnessEstimation)** - Adapts the experience based on environment brightness
 * **[`MultiObjectDetection`](./Assets/PassthroughCameraApiSamples/MultiObjectDetection)** - Uses Unity Inference Engine for real-world object recognition
 * **[`ShaderSample`](./Assets/PassthroughCameraApiSamples/ShaderSample)** - Applies custom GPU effects to camera texture
 
+**New AI Inference Samples** (Server-based):
+* **[`PoseEstimation`](./Assets/PassthroughCameraApiSamples/PoseEstimation)** - Real-time human pose tracking with skeleton visualization
+* **[`DepthEstimation`](./Assets/PassthroughCameraApiSamples/DepthEstimation)** - MiDaS depth estimation with 3D depth map overlay
+* **[`Segmentation`](./Assets/PassthroughCameraApiSamples/Segmentation)** - Instance segmentation using SAM with RGB or RGB-D modes
+
+All AI inference samples use a **unified architecture**:
+- `InferenceConfig` - Unified configuration for all modes
+- `SharedInferenceHUD` - Real-time metrics display (FPS, latency, bandwidth)
+- `/infer_human` endpoint - Single server endpoint for all modes
+- Consistent performance tracking and comparison
+
 ### Additional Components
 
 * **[`PassthroughCamera`](./Assets/PassthroughCameraApiSamples/PassthroughCamera)** - C# classes and utilities for camera access
+* **[`Shared`](./Assets/PassthroughCameraApiSamples/Shared)** - Shared infrastructure for AI inference (InferenceConfig, SharedInferenceHUD, ServerConfig)
 * **[`StartScene`](./Assets/PassthroughCameraApiSamples/StartScene)** - Menu scene for switching between samples
 
 ## Getting Started

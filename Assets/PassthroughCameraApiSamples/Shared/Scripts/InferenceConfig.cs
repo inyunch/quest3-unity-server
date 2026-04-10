@@ -40,7 +40,23 @@ namespace PassthroughCameraSamples.Shared
         /// - Medium speed (~250-350ms E2E)
         /// - Download: ~300KB (depth map)
         /// </summary>
-        DepthEstimation = 3
+        DepthEstimation = 3,
+
+        /// <summary>
+        /// Segmentation only (mode=segmentation)
+        /// - Semantic segmentation with SAM model
+        /// - Medium speed (~150-250ms E2E)
+        /// - Download: ~75KB (segmentation mask)
+        /// </summary>
+        Segmentation = 4,
+
+        /// <summary>
+        /// Segmentation + Depth (mode=seg_depth)
+        /// - Semantic segmentation + depth estimation
+        /// - Slower (~300-450ms E2E)
+        /// - Download: ~375KB (mask + depth map)
+        /// </summary>
+        SegmentationWithDepth = 5
     }
 
     /// <summary>
@@ -51,8 +67,11 @@ namespace PassthroughCameraSamples.Shared
     public class InferenceConfig
     {
         [Header("Server Connection")]
-        [Tooltip("Base URL of the inference server (without query parameters)")]
-        public string baseUrl = "http://192.168.0.135:8001/infer_human";
+        [Tooltip("Use centralized ServerConfig asset for IP/port. If enabled, baseUrl is auto-generated from ServerConfig.")]
+        public bool useServerConfig = true;
+
+        [Tooltip("Base URL of the inference server (without query parameters). Only used if useServerConfig is false.")]
+        public string baseUrl = "";
 
         [Header("Inference Mode")]
         [Tooltip("Type of inference to perform")]
@@ -90,6 +109,10 @@ namespace PassthroughCameraSamples.Shared
                     return "both";
                 case InferenceMode.DepthEstimation:
                     return "depth";
+                case InferenceMode.Segmentation:
+                    return "segmentation";
+                case InferenceMode.SegmentationWithDepth:
+                    return "seg_depth";
                 default:
                     Debug.LogWarning($"[InferenceConfig] Unknown mode: {mode}, defaulting to 'detection'");
                     return "detection";
@@ -98,15 +121,46 @@ namespace PassthroughCameraSamples.Shared
 
         /// <summary>
         /// Build the complete server URL with query parameters.
+        /// Uses ServerConfig if useServerConfig is true, otherwise uses baseUrl.
         /// </summary>
         public string BuildUrl()
         {
             string modeParam = GetModeString();
 
-            // For depth mode, depth is always included regardless of includeDepth setting
-            bool actualIncludeDepth = (mode == InferenceMode.DepthEstimation) || includeDepth;
+            // For depth mode or seg_depth mode, depth is always included
+            bool actualIncludeDepth = (mode == InferenceMode.DepthEstimation) ||
+                                     (mode == InferenceMode.SegmentationWithDepth) ||
+                                     includeDepth;
 
-            string url = $"{baseUrl}?mode={modeParam}&include_mask={includeMask.ToString().ToLower()}&include_depth={actualIncludeDepth.ToString().ToLower()}";
+            // For segmentation modes, mask is always included
+            bool actualIncludeMask = (mode == InferenceMode.Segmentation) ||
+                                    (mode == InferenceMode.SegmentationWithDepth) ||
+                                    includeMask;
+
+            // Determine base URL
+            string effectiveBaseUrl;
+            if (useServerConfig)
+            {
+                // Use centralized ServerConfig
+                effectiveBaseUrl = ServerConfig.Instance.InferenceUrl;
+            }
+            else
+            {
+                // Use local baseUrl field
+                if (string.IsNullOrEmpty(baseUrl))
+                {
+                    Debug.LogError("[InferenceConfig] baseUrl is empty and useServerConfig is false! " +
+                                   "Either enable 'Use Server Config' or provide a baseUrl. " +
+                                   "Falling back to ServerConfig.");
+                    effectiveBaseUrl = ServerConfig.Instance.InferenceUrl;
+                }
+                else
+                {
+                    effectiveBaseUrl = baseUrl;
+                }
+            }
+
+            string url = $"{effectiveBaseUrl}?mode={modeParam}&include_mask={actualIncludeMask.ToString().ToLower()}&include_depth={actualIncludeDepth.ToString().ToLower()}";
 
             return url;
         }
@@ -140,6 +194,10 @@ namespace PassthroughCameraSamples.Shared
                     return "Detection + Pose";
                 case InferenceMode.DepthEstimation:
                     return "Depth Estimation";
+                case InferenceMode.Segmentation:
+                    return "Segmentation";
+                case InferenceMode.SegmentationWithDepth:
+                    return "Segmentation + Depth";
                 default:
                     return "Unknown";
             }
@@ -152,10 +210,12 @@ namespace PassthroughCameraSamples.Shared
         {
             int baseSize = 20; // KB - skeleton data
 
-            if (includeMask)
+            // For segmentation modes, mask is always included
+            if (mode == InferenceMode.Segmentation || mode == InferenceMode.SegmentationWithDepth || includeMask)
                 baseSize += 75; // Segmentation mask
 
-            if (mode == InferenceMode.DepthEstimation || includeDepth)
+            // For depth modes, depth map is always included
+            if (mode == InferenceMode.DepthEstimation || mode == InferenceMode.SegmentationWithDepth || includeDepth)
                 baseSize += 300; // Depth map
 
             if (baseSize < 100)
@@ -194,6 +254,11 @@ namespace PassthroughCameraSamples.Shared
                 Debug.LogWarning($"[InferenceConfig] Depth mode with high FPS ({targetFPS}) will cause large bandwidth usage (~300KB per frame)");
             }
 
+            if (mode == InferenceMode.SegmentationWithDepth && targetFPS > 10f)
+            {
+                Debug.LogWarning($"[InferenceConfig] Segmentation+Depth mode with high FPS ({targetFPS}) will cause large bandwidth usage (~375KB per frame)");
+            }
+
             if (includeMask && includeDepth)
             {
                 int totalSize = 20 + 75 + 300; // KB
@@ -207,13 +272,21 @@ namespace PassthroughCameraSamples.Shared
         public void LogSummary()
         {
             Debug.Log($"[InferenceConfig] === Configuration Summary ===");
+            Debug.Log($"[InferenceConfig] Using ServerConfig: {useServerConfig} {(useServerConfig ? $"(IP: {ServerConfig.Instance.ServerIP})" : "")}");
             Debug.Log($"[InferenceConfig] URL: {BuildUrl()}");
             Debug.Log($"[InferenceConfig] Mode: {GetModeDisplayName()} ({GetModeString()})");
             Debug.Log($"[InferenceConfig] Target FPS: {targetFPS:F1} ({GetInferenceInterval() * 1000f:F0}ms interval)");
             Debug.Log($"[InferenceConfig] JPEG Quality: {jpegQuality}");
             Debug.Log($"[InferenceConfig] Expected Download: {GetExpectedDownloadSize()}");
-            Debug.Log($"[InferenceConfig] Include Mask: {includeMask}");
-            Debug.Log($"[InferenceConfig] Include Depth: {(mode == InferenceMode.DepthEstimation ? "true (forced)" : includeDepth.ToString().ToLower())}");
+            // Show forced states for mask and depth
+            bool maskForced = (mode == InferenceMode.Segmentation || mode == InferenceMode.SegmentationWithDepth);
+            bool depthForced = (mode == InferenceMode.DepthEstimation || mode == InferenceMode.SegmentationWithDepth);
+
+            string maskStatus = maskForced ? "true (forced)" : includeMask.ToString().ToLower();
+            string depthStatus = depthForced ? "true (forced)" : includeDepth.ToString().ToLower();
+
+            Debug.Log($"[InferenceConfig] Include Mask: {maskStatus}");
+            Debug.Log($"[InferenceConfig] Include Depth: {depthStatus}");
         }
     }
 
@@ -267,6 +340,30 @@ namespace PassthroughCameraSamples.Shared
                 jpegQuality = 90,
                 includeMask = true,
                 includeDepth = true
+            };
+        }
+
+        public static InferenceConfig Segmentation()
+        {
+            return new InferenceConfig
+            {
+                mode = InferenceMode.Segmentation,
+                targetFPS = 5f,
+                jpegQuality = 80,
+                includeMask = false,  // Will be forced to true by mode
+                includeDepth = false
+            };
+        }
+
+        public static InferenceConfig SegmentationWithDepth()
+        {
+            return new InferenceConfig
+            {
+                mode = InferenceMode.SegmentationWithDepth,
+                targetFPS = 5f,  // Lower FPS due to large download
+                jpegQuality = 80,
+                includeMask = false,  // Will be forced to true by mode
+                includeDepth = false  // Will be forced to true by mode
             };
         }
     }

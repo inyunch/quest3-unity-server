@@ -498,6 +498,13 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             request.SetRequestHeader("X-Download-Bytes", m_lastDownloadBytes.ToString());
             request.SetRequestHeader("X-Download-Bytes-Compressed", m_lastDownloadBytesCompressed.ToString());
 
+            // Performance metrics headers
+            float freezeRatio = m_totalFrames > 0 ? (float)m_frozenFrames / m_totalFrames : 0f;
+            request.SetRequestHeader("X-Target-FPS", m_inferenceConfig.targetFPS.ToString("F1"));
+            request.SetRequestHeader("X-Dropped-Frames", m_droppedFrames.ToString());
+            request.SetRequestHeader("X-Freeze-Frames", m_frozenFrames.ToString());
+            request.SetRequestHeader("X-Freeze-Ratio", freezeRatio.ToString("F4"));
+
             Debug.Log($"[SERVER SEND] >>> Sending frame {m_frameId} to: {serverUrl}");
 
             // 4. Send request and measure UPLOAD time

@@ -250,6 +250,10 @@ namespace PassthroughCameraSamples.Shared
                     return "Detection + Pose";
                 case InferenceMode.DepthEstimation:
                     return "Depth Estimation";
+                case InferenceMode.Segmentation:
+                    return "Segmentation";
+                case InferenceMode.SegmentationWithDepth:
+                    return "Segmentation + Depth";
                 default:
                     return "Unknown";
             }

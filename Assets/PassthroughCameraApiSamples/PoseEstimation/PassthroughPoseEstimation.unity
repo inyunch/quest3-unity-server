@@ -2163,6 +2163,7 @@ MonoBehaviour:
   m_inferenceHUD: {fileID: 0}
   m_sharedHUD: {fileID: 0}
   m_inferenceConfig:
+    useServerConfig: 1
     baseUrl: http://192.168.0.135:8001/infer_human
     mode: 2
     includeMask: 0
@@ -2170,7 +2171,7 @@ MonoBehaviour:
     jpegQuality: 80
     targetFPS: 5
   m_minKeypointScore: 0.3
-  m_serverUrl: http://192.168.0.155:8001/infer_human?mode=both
+  m_serverUrl: 
   m_jpegQuality: 80
 --- !u!224 &8587535026074093613 stripped
 RectTransform:

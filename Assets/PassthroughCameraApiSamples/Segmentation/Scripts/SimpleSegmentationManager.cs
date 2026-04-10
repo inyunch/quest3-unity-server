@@ -1,43 +1,42 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using Meta.XR;
-using Meta.XR.Samples;
 using UnityEngine;
 using UnityEngine.Networking;
 using Newtonsoft.Json;
 using PassthroughCameraSamples.Shared;
 
-namespace PassthroughCameraSamples.PoseEstimation
+namespace PassthroughCameraSamples.Segmentation
 {
-    [MetaCodeSample("PassthroughCameraApiSamples-PoseEstimation")]
-    public class PoseInferenceRunManager : MonoBehaviour
+    /// <summary>
+    /// Simplified segmentation manager using unified InferenceConfig and /infer_human endpoint.
+    /// Supports both Segmentation and SegmentationWithDepth modes for unified metrics comparison.
+    /// </summary>
+    public class SimpleSegmentationManager : MonoBehaviour
     {
+        [Header("Core References")]
         [SerializeField] private PassthroughCameraAccess m_cameraAccess;
         [SerializeField] private PassthroughCameraSamples.MultiObjectDetection.DetectionUiMenuManager m_uiMenuManager;
-        [SerializeField] private PoseEstimationManager m_poseManager;
 
-        [Header("UI display references")]
-        [SerializeField] private PoseSkeletonUiManager m_uiPose;
-        [SerializeField] private InferenceHUD m_inferenceHUD;
+        [Header("Rendering")]
+        [SerializeField] private Segmentation3DRenderer m_renderer3D;
+
+        [Header("UI Display")]
         [SerializeField] private SharedInferenceHUD m_sharedHUD;
 
-        [Header("Server Inference (NEW)")]
+        [Header("Unified Server Inference")]
         [SerializeField] private InferenceConfig m_inferenceConfig = new InferenceConfig
         {
-            mode = InferenceMode.Both,
+            mode = InferenceMode.SegmentationWithDepth,  // or InferenceMode.Segmentation
             targetFPS = 5f,
             jpegQuality = 80,
-            includeMask = false,
-            includeDepth = false
+            includeMask = false,  // Will be forced to true by mode
+            includeDepth = false  // Will be forced to true if SegmentationWithDepth
         };
-        [SerializeField] private float m_minKeypointScore = 0.3f;
-
-        [Header("Legacy Server Inference (DEPRECATED - use m_inferenceConfig instead)")]
-        [SerializeField] private string m_serverUrl = "";  // Left for backward compatibility
-        [SerializeField, Range(60, 100)] private int m_jpegQuality = 80;  // DEPRECATED
 
         private int m_frameId = 0;
 
@@ -50,53 +49,42 @@ namespace PassthroughCameraSamples.PoseEstimation
         private int m_lastDownloadBytes = 0;
         private int m_lastDownloadBytesCompressed = 0;
 
-        // FPS throttling (Part C)
+        // FPS throttling
         private float m_lastInferenceTime = 0f;
         private bool m_inferenceInProgress = false;
 
-        // Frame statistics (Part D)
+        // Frame statistics
         private int m_totalFrames = 0;
         private int m_droppedFrames = 0;
         private int m_frozenFrames = 0;
 
         private IEnumerator Start()
         {
-            Debug.Log("[POSE INF] PoseInferenceRunManager started");
+            Debug.Log("[SEG SIMPLE] SimpleSegmentationManager started");
 
             // Reference checks
-            Debug.Log($"[POSE REF] cameraAccess={m_cameraAccess != null}");
-            Debug.Log($"[POSE REF] uiMenuManager={m_uiMenuManager != null}");
-            Debug.Log($"[POSE REF] poseManager={m_poseManager != null}");
-            Debug.Log($"[POSE REF] uiPose={m_uiPose != null}");
+            Debug.Log($"[SEG REF] cameraAccess={m_cameraAccess != null}");
+            Debug.Log($"[SEG REF] uiMenuManager={m_uiMenuManager != null}");
+            Debug.Log($"[SEG REF] renderer3D={m_renderer3D != null}");
+            Debug.Log($"[SEG REF] sharedHUD={m_sharedHUD != null}");
 
-            // Migrate from legacy settings if needed
-            if (!string.IsNullOrEmpty(m_serverUrl) && m_inferenceConfig.baseUrl == "http://192.168.0.135:8001/infer_human")
-            {
-                Debug.LogWarning("[POSE] m_serverUrl is deprecated. Please use m_inferenceConfig instead.");
-            }
-
-            if (m_jpegQuality != 80 && m_inferenceConfig.jpegQuality == 80)
-            {
-                Debug.LogWarning($"[POSE] Migrating legacy m_jpegQuality ({m_jpegQuality}) to m_inferenceConfig");
-                m_inferenceConfig.jpegQuality = m_jpegQuality;
-            }
-
+            // Validate and log config
             m_inferenceConfig.Validate();
             m_inferenceConfig.LogSummary();
 
-            // Initialize SharedInferenceHUD if available
+            // Initialize SharedInferenceHUD
             if (m_sharedHUD != null)
             {
                 m_sharedHUD.SetMode(m_inferenceConfig.mode, m_inferenceConfig.targetFPS);
             }
 
-            // Test server connection at startup
+            // Test server connection
             Debug.Log("[SERVER TEST] Testing connection to server...");
             yield return TestServerConnection();
 
             while (true)
             {
-                while (m_uiMenuManager.IsPaused)
+                while (m_uiMenuManager != null && m_uiMenuManager.IsPaused)
                 {
                     yield return null;
                 }
@@ -106,14 +94,12 @@ namespace PassthroughCameraSamples.PoseEstimation
 
         private IEnumerator RunInference()
         {
-            if (!m_cameraAccess.IsPlaying)
+            if (m_cameraAccess == null || !m_cameraAccess.IsPlaying)
             {
                 yield break;
             }
 
-            // ============================================================================
-            // FPS THROTTLING (Part C)
-            // ============================================================================
+            // FPS THROTTLING
             float currentTime = Time.time;
             float targetInterval = m_inferenceConfig.GetInferenceInterval();
             float timeSinceLastInference = currentTime - m_lastInferenceTime;
@@ -121,7 +107,6 @@ namespace PassthroughCameraSamples.PoseEstimation
             // Check if we should drop this frame (too soon since last inference)
             if (timeSinceLastInference < targetInterval)
             {
-                // Drop frame - respecting target FPS
                 m_droppedFrames++;
                 if (m_sharedHUD != null)
                 {
@@ -149,14 +134,12 @@ namespace PassthroughCameraSamples.PoseEstimation
             static extern OVRPlugin.Result ovrp_GetNodePoseStateAtTime(double time, OVRPlugin.Node nodeId, out OVRPlugin.PoseStatef nodePoseState);
             if (!ovrp_GetNodePoseStateAtTime(OVRPlugin.GetTimeInSeconds(), OVRPlugin.Node.Head, out _).IsSuccess())
             {
-                Debug.Log("ovrp_GetNodePoseStateAtTime failed, which means 'm_cameraAccess.GetCameraPose()' is not reliable, skipping.");
+                Debug.Log("[SEG] ovrp_GetNodePoseStateAtTime failed, skipping frame.");
                 m_inferenceInProgress = false;
                 yield break;
             }
 
-            var cachedCameraPose = m_cameraAccess.GetCameraPose();
-
-            // Update Capture data
+            // Get camera texture
             Texture targetTexture = m_cameraAccess.GetTexture();
 
             // Run server inference
@@ -165,14 +148,6 @@ namespace PassthroughCameraSamples.PoseEstimation
             // Mark inference as complete
             m_inferenceInProgress = false;
             m_totalFrames++;
-
-            // Checking if spatial anchor is tracked ensures skeleton is placed at correct world space positions
-            if (!m_cameraAccess.IsPlaying || m_poseManager.m_spatialAnchor == null || !m_poseManager.m_spatialAnchor.IsTracked)
-            {
-                yield break;
-            }
-
-            // m_uiPose.DrawPoseSkeletons() is called from within RunServerInference after parsing
         }
 
         // ============================================================================
@@ -180,54 +155,43 @@ namespace PassthroughCameraSamples.PoseEstimation
         // ============================================================================
 
         [System.Serializable]
-        private class PoseServerResponse
+        private class SegmentationServerResponse
         {
-            public DetectionResultData detections;
+            public SegmentationResultData segmentation;
+            public DepthResultData depth;
             public SkeletonData skeleton;
             public int model_input_width;
             public int model_input_height;
             public int input_image_width;
             public int input_image_height;
             public float processing_time_ms;
+            public string mode;
         }
 
         [System.Serializable]
-        private class DetectionResultData
+        private class SegmentationResultData
         {
-            public DetectionData[] detections;
-            public int num_detections;
+            public int mask_height;
+            public int mask_width;
+            public int downsample_factor;
+            public string mask_png_base64;  // NEW: Base64 encoded PNG RGBA
+            public int num_instances;
+            public string[] classes;
         }
 
         [System.Serializable]
-        private class DetectionData
+        private class DepthResultData
         {
-            public int class_id;
-            public string class_name;
-            public float confidence;
-            public float[] bbox;           // normalized [0-1]
-            public int[] bbox_pixels;      // absolute pixels
+            public int height;
+            public int width;
+            public int downsample_factor;
+            public float[][] values;  // 2D depth map
         }
 
         [System.Serializable]
         private class SkeletonData
         {
-            public List<PersonSkeleton> persons;  // persons is an ARRAY of person objects, not an int!
-        }
-
-        [System.Serializable]
-        public class PersonSkeleton
-        {
-            public List<Keypoint> keypoints;  // 17 keypoints in COCO order
-            public float[] bbox;              // [x1_norm, y1_norm, x2_norm, y2_norm]
-        }
-
-        [System.Serializable]
-        public class Keypoint
-        {
-            public string name;
-            public float x;      // normalized 0-1
-            public float y;      // normalized 0-1
-            public float score;  // confidence 0-1
+            public object[] persons;  // Empty for segmentation modes
         }
 
         // ============================================================================
@@ -236,8 +200,9 @@ namespace PassthroughCameraSamples.PoseEstimation
 
         private IEnumerator TestServerConnection()
         {
-            string testUrl = "http://192.168.0.135:8001/";
-            Debug.Log($"[POSE SERVER TEST] Connecting to {testUrl}");
+            // Use ServerConfig to get base URL
+            string testUrl = ServerConfig.Instance.BaseUrl;
+            Debug.Log($"[SEG SERVER TEST] Connecting to {testUrl}");
 
             using (UnityWebRequest req = UnityWebRequest.Get(testUrl))
             {
@@ -246,13 +211,13 @@ namespace PassthroughCameraSamples.PoseEstimation
 
                 if (req.result == UnityWebRequest.Result.Success)
                 {
-                    Debug.Log($"[POSE SERVER TEST] ✓ Connection OK! Response: {req.downloadHandler.text}");
+                    Debug.Log($"[SEG SERVER TEST] ??Connection OK! Response: {req.downloadHandler.text}");
                 }
                 else
                 {
-                    Debug.LogError($"[POSE SERVER TEST] ✗ Connection FAILED: {req.error}");
-                    Debug.LogError($"[POSE SERVER TEST] Result: {req.result}");
-                    Debug.LogError($"[POSE SERVER TEST] Response Code: {req.responseCode}");
+                    Debug.LogError($"[SEG SERVER TEST] ??Connection FAILED: {req.error}");
+                    Debug.LogError($"[SEG SERVER TEST] Result: {req.result}");
+                    Debug.LogError($"[SEG SERVER TEST] Response Code: {req.responseCode}");
                 }
             }
         }
@@ -283,32 +248,34 @@ namespace PassthroughCameraSamples.PoseEstimation
                 }
                 else
                 {
-                    Debug.LogError("[POSE SERVER] Unsupported texture type for server inference");
+                    Debug.LogError("[SEG] Unsupported texture type for server inference");
+                    m_inferenceInProgress = false;
                     yield break;
                 }
             }
 
-            // 2. Encode texture as JPEG (use configurable quality from InferenceConfig)
+            // 2. Encode texture as JPEG
             int jpegQuality = m_inferenceConfig.jpegQuality;
             byte[] jpegBytes = tex2D.EncodeToJPG(jpegQuality);
             int uploadBytes = jpegBytes.Length;
-            Debug.Log($"[POSE SERVER] Encoded JPEG (quality={jpegQuality}): {uploadBytes} bytes ({tex2D.width}x{tex2D.height})");
+            Debug.Log($"[SEG] Encoded JPEG (quality={jpegQuality}): {uploadBytes} bytes ({tex2D.width}x{tex2D.height})");
 
             // 3. Create multipart form POST
             List<IMultipartFormSection> formData = new List<IMultipartFormSection>();
             formData.Add(new MultipartFormFileSection("image", jpegBytes, "frame.jpg", "image/jpeg"));
 
-            // Use InferenceConfig to build URL (with fallback to legacy m_serverUrl)
-            string serverUrl = !string.IsNullOrEmpty(m_serverUrl) ? m_serverUrl : m_inferenceConfig.BuildUrl();
+            // Build URL from InferenceConfig
+            string serverUrl = m_inferenceConfig.BuildUrl();
+            Debug.Log($"[SEG] Server URL: {serverUrl}");
 
             UnityWebRequest request = UnityWebRequest.Post(serverUrl, formData);
 
-            // Add HTTP headers (including timing data from previous frame)
-            request.SetRequestHeader("X-Scene-Name", "PoseEstimation");
+            // Add HTTP headers
+            string sceneName = m_inferenceConfig.mode == InferenceMode.Segmentation ? "Segmentation" : "SegmentationWithDepth";
+            request.SetRequestHeader("X-Scene-Name", sceneName);
             request.SetRequestHeader("X-Frame-Id", m_frameId.ToString());
 
-            // Send timing data from PREVIOUS frame (frame N-1) for Excel logging
-            // These values are 0 for the first frame, which is expected
+            // Send timing data from PREVIOUS frame
             request.SetRequestHeader("X-E2E-Ms", m_lastE2eMs.ToString("F1"));
             request.SetRequestHeader("X-Upload-Ms", m_lastUploadMs.ToString("F1"));
             request.SetRequestHeader("X-Download-Ms", m_lastDownloadMs.ToString("F1"));
@@ -324,7 +291,7 @@ namespace PassthroughCameraSamples.PoseEstimation
             request.SetRequestHeader("X-Freeze-Frames", m_frozenFrames.ToString());
             request.SetRequestHeader("X-Freeze-Ratio", freezeRatio.ToString("F4"));
 
-            Debug.Log($"[POSE SEND] Sending frame {m_frameId} to server...");
+            Debug.Log($"[SEG SEND] Sending frame {m_frameId} to server...");
 
             // 4. Send request and measure UPLOAD time
             float uploadStartTime = Time.realtimeSinceStartup;
@@ -344,15 +311,15 @@ namespace PassthroughCameraSamples.PoseEstimation
             // Wait for response to complete
             yield return asyncOp;
 
-            Debug.Log($"[POSE SERVER SEND] <<< Request completed. Result: {request.result}");
+            Debug.Log($"[SEG] Request completed. Result: {request.result}");
 
             if (request.result != UnityWebRequest.Result.Success)
             {
-                Debug.LogError($"[POSE SERVER] Inference failed: {request.error}");
-                Debug.LogError($"[POSE SERVER] Result type: {request.result}");
-                Debug.LogError($"[POSE SERVER] Response code: {request.responseCode}");
-                Debug.LogError($"[POSE SERVER] URL was: {serverUrl}");
-                m_inferenceInProgress = false;  // Release lock on error
+                Debug.LogError($"[SEG] Inference failed: {request.error}");
+                Debug.LogError($"[SEG] Result type: {request.result}");
+                Debug.LogError($"[SEG] Response code: {request.responseCode}");
+                Debug.LogError($"[SEG] URL was: {serverUrl}");
+                m_inferenceInProgress = false;
                 yield break;
             }
 
@@ -360,55 +327,37 @@ namespace PassthroughCameraSamples.PoseEstimation
             float parseStartTime = Time.realtimeSinceStartup;
 
             string jsonResponse = request.downloadHandler.text;
-            Debug.Log($"[POSE RECV] Response received, length={jsonResponse.Length}");
-            Debug.Log($"[POSE RECV] First 200 chars: {jsonResponse.Substring(0, Mathf.Min(200, jsonResponse.Length))}");
+            Debug.Log($"[SEG RECV] Response received, length={jsonResponse.Length}");
+            Debug.Log($"[SEG RECV] First 200 chars: {jsonResponse.Substring(0, Mathf.Min(200, jsonResponse.Length))}");
 
-            // WORKAROUND: Extract skeleton and detections BEFORE parsing full JSON
-            // This bypasses the huge segmentation mask that causes parser to fail
-            PoseServerResponse response = new PoseServerResponse();
+            // Extract segmentation field using string parsing (bypasses large depth/mask arrays)
+            SegmentationServerResponse response = new SegmentationServerResponse();
 
-            // Extract skeleton portion using string parsing
-            Debug.Log($"[POSE JSON] Extracting skeleton from large JSON (size={jsonResponse.Length})...");
-            string skeletonJson = ExtractJsonField(jsonResponse, "skeleton");
-            if (!string.IsNullOrEmpty(skeletonJson))
+            // Extract segmentation portion
+            string segmentationJson = ExtractJsonField(jsonResponse, "segmentation");
+            if (!string.IsNullOrEmpty(segmentationJson))
             {
-                // CRITICAL: Show actual skeleton JSON structure
-                Debug.Log($"[SKELETON RAW] Full skeleton JSON ({skeletonJson.Length} chars): {skeletonJson}");
-                Debug.Log($"[SKELETON RAW] First 300 chars: {skeletonJson.Substring(0, Mathf.Min(300, skeletonJson.Length))}");
+                Debug.Log($"[SEG JSON] Extracted segmentation: {segmentationJson.Length} chars");
+                Debug.Log($"[SEG JSON] First 300 chars: {segmentationJson.Substring(0, Mathf.Min(300, segmentationJson.Length))}");
 
                 try
                 {
-                    response.skeleton = JsonConvert.DeserializeObject<SkeletonData>(skeletonJson);
-                    Debug.Log($"[POSE JSON] Skeleton extracted successfully");
+                    response.segmentation = JsonConvert.DeserializeObject<SegmentationResultData>(segmentationJson);
+                    Debug.Log($"[SEG JSON] Segmentation parsed successfully");
+                    Debug.Log($"[SEG JSON] num_instances={response.segmentation.num_instances}");
+                    Debug.Log($"[SEG JSON] mask_width={response.segmentation.mask_width}");
+                    Debug.Log($"[SEG JSON] mask_height={response.segmentation.mask_height}");
+                    Debug.Log($"[SEG JSON] mask_png_base64 length={response.segmentation.mask_png_base64?.Length ?? 0}");
                 }
-                catch (System.Exception e)
+                catch (Exception e)
                 {
-                    Debug.LogError($"[POSE JSON] Failed to parse extracted skeleton: {e.Message}");
-                    Debug.LogError($"[POSE JSON] Error details: {e}");
+                    Debug.LogError($"[SEG JSON] Failed to parse segmentation: {e.Message}");
+                    Debug.LogError($"[SEG JSON] Error details: {e}");
                 }
             }
             else
             {
-                Debug.LogError($"[POSE JSON] Failed to extract skeleton field from JSON");
-            }
-
-            // Extract detections portion
-            string detectionsJson = ExtractJsonField(jsonResponse, "detections");
-            if (!string.IsNullOrEmpty(detectionsJson))
-            {
-                // Also log detections for comparison
-                Debug.Log($"[DETECTIONS RAW] First 200 chars: {detectionsJson.Substring(0, Mathf.Min(200, detectionsJson.Length))}");
-
-                try
-                {
-                    response.detections = JsonConvert.DeserializeObject<DetectionResultData>(detectionsJson);
-                    Debug.Log($"[POSE JSON] Detections extracted successfully");
-                }
-                catch (System.Exception e)
-                {
-                    Debug.LogError($"[POSE JSON] Failed to parse extracted detections: {e.Message}");
-                    Debug.LogError($"[POSE JSON] Error details: {e}");
-                }
+                Debug.LogError($"[SEG JSON] Failed to extract segmentation field from JSON");
             }
 
             // Extract processing_time_ms
@@ -416,12 +365,21 @@ namespace PassthroughCameraSamples.PoseEstimation
             if (!string.IsNullOrEmpty(procTimeStr) && float.TryParse(procTimeStr, out float procTime))
             {
                 response.processing_time_ms = procTime;
-                Debug.Log($"[POSE JSON] Processing time: {procTime:F1}ms");
+                Debug.Log($"[SEG JSON] Processing time: {procTime:F1}ms");
             }
 
-            if (response == null || response.skeleton == null)
+            // Extract mode
+            string modeStr = ExtractSimpleJsonValue(jsonResponse, "mode");
+            if (!string.IsNullOrEmpty(modeStr))
             {
-                Debug.LogError("[POSE SERVER] Failed to parse JSON response");
+                response.mode = modeStr;
+                Debug.Log($"[SEG JSON] Mode: {modeStr}");
+            }
+
+            if (response == null || response.segmentation == null)
+            {
+                Debug.LogError("[SEG] Failed to parse JSON response");
+                m_inferenceInProgress = false;
                 yield break;
             }
 
@@ -434,125 +392,49 @@ namespace PassthroughCameraSamples.PoseEstimation
             float serverProcMs = response.processing_time_ms;
             float downloadMs = Mathf.Max(0f, e2eMs - uploadMs - serverProcMs - parseMs);
 
-            Debug.Log($"[TIMING] E2E={e2eMs:F0}ms (upload={uploadMs:F0}ms server={serverProcMs:F0}ms download={downloadMs:F0}ms parse={parseMs:F0}ms)");
+            Debug.Log($"[SEG TIMING] E2E={e2eMs:F0}ms (upload={uploadMs:F0}ms server={serverProcMs:F0}ms download={downloadMs:F0}ms parse={parseMs:F0}ms)");
 
             // Log both compressed and uncompressed sizes
             int uncompressedBytes = System.Text.Encoding.UTF8.GetByteCount(request.downloadHandler.text);
             float compressionRatio = downloadBytes > 0 ? (float)uncompressedBytes / downloadBytes : 1f;
-            Debug.Log($"[BYTES] Upload={uploadBytes} Download={downloadBytes}B (compressed), {uncompressedBytes}B (uncompressed), {compressionRatio:F2}x compression");
+            Debug.Log($"[SEG BYTES] Upload={uploadBytes} Download={downloadBytes}B (compressed), {uncompressedBytes}B (uncompressed), {compressionRatio:F2}x compression");
 
-            // Detailed parse verification logs
-            Debug.Log($"[POSE PARSE] skeleton null={response.skeleton == null}");
-            int personsCount = response.skeleton?.persons?.Count ?? 0;
-            Debug.Log($"[POSE PARSE] persons count={personsCount}");
-            Debug.Log($"[POSE PARSE] detections={response.detections?.detections?.Length ?? 0}");
-
-            if (response.skeleton?.persons != null && response.skeleton.persons.Count > 0)
+            // 6. Render segmentation mask
+            if (response.segmentation != null && !string.IsNullOrEmpty(response.segmentation.mask_png_base64))
             {
-                Debug.Log($"[POSE PARSE] persons array has {response.skeleton.persons.Count} person(s)");
-                var p = response.skeleton.persons[0];
-                Debug.Log($"[POSE PARSE] person 0: {p.keypoints?.Count ?? 0} keypoints");
+                Debug.Log($"[SEG RENDER] Rendering segmentation mask: {response.segmentation.num_instances} instances");
 
-                if (p.keypoints != null && p.keypoints.Count > 0)
+                if (m_renderer3D != null)
                 {
-                    // Find nose keypoint
-                    var nose = p.keypoints.Find(k => k.name == "nose");
-                    if (nose != null)
+                    // Convert to SegmentationResponse format for renderer
+                    var segResponse = new PassthroughCameraSamples.Segmentation.SegmentationResponse
                     {
-                        Debug.Log($"[POSE PARSE] nose: x={nose.x:F3} y={nose.y:F3} score={nose.score:F2}");
-                    }
+                        frame_id = m_frameId,
+                        mode = response.mode ?? "segmentation",
+                        success = true,
+                        segmentation_mask = response.segmentation.mask_png_base64,
+                        mask_width = response.segmentation.mask_width,
+                        mask_height = response.segmentation.mask_height,
+                        mask_encoding = "png",
+                        classes = response.segmentation.classes ?? new string[0],
+                        num_instances = response.segmentation.num_instances
+                    };
 
-                    // Log first 3 keypoints
-                    for (int i = 0; i < Mathf.Min(3, p.keypoints.Count); i++)
-                    {
-                        var kp = p.keypoints[i];
-                        Debug.Log($"[POSE PARSE] kp={kp.name} pos=({kp.x:F3},{kp.y:F3}) score={kp.score:F2}");
-                    }
+                    m_renderer3D.RenderSegmentation(segResponse);
+                }
+                else
+                {
+                    Debug.LogWarning("[SEG RENDER] No 3D renderer assigned!");
                 }
             }
             else
             {
-                Debug.LogWarning($"[POSE PARSE] skeleton.persons is NULL or empty!");
+                Debug.Log("[SEG] No segmentation mask in response");
             }
 
-            // 6. Draw pose skeletons on UI
-            var cachedCameraPose = m_cameraAccess.GetCameraPose();
+            // 7. Update SharedInferenceHUD with metrics
+            int detectionCount = response.segmentation?.num_instances ?? 0;
 
-            if (response.skeleton != null && response.skeleton.persons != null && response.skeleton.persons.Count > 0)
-            {
-                Debug.Log($"[POSE SERVER] Received {response.skeleton.persons.Count} person(s) with pose data");
-                m_uiPose.DrawPoseSkeletons(response.skeleton.persons.ToArray(), cachedCameraPose, m_minKeypointScore);
-            }
-            else
-            {
-                Debug.Log("[POSE SERVER] No pose data in response");
-                m_uiPose.ClearSkeletons();
-            }
-
-            // 7. Update HUD with inference metrics
-            // Compute average detection confidence
-            float avgConfidence = 0f;
-            if (response.detections != null && response.detections.detections != null && response.detections.detections.Length > 0)
-            {
-                float sum = 0f;
-                foreach (var det in response.detections.detections)
-                {
-                    sum += det.confidence;
-                }
-                avgConfidence = sum / response.detections.detections.Length;
-            }
-
-            // Compute average keypoint confidence
-            float keypointAvgConf = 0f;
-            if (response.skeleton != null && response.skeleton.persons != null && response.skeleton.persons.Count > 0)
-            {
-                List<float> allScores = new List<float>();
-                foreach (var person in response.skeleton.persons)
-                {
-                    if (person != null && person.keypoints != null)
-                    {
-                        foreach (var kp in person.keypoints)
-                        {
-                            if (kp.score > 0f)
-                            {
-                                allScores.Add(kp.score);
-                            }
-                        }
-                    }
-                }
-                if (allScores.Count > 0)
-                {
-                    float sum = 0f;
-                    foreach (var score in allScores)
-                    {
-                        sum += score;
-                    }
-                    keypointAvgConf = sum / allScores.Count;
-                }
-            }
-
-            // Get detection count (number of persons)
-            int detectionCount = response.skeleton?.persons?.Count ?? 0;
-
-            // Update legacy HUD
-            if (m_inferenceHUD != null)
-            {
-                m_inferenceHUD.UpdateHUD(
-                    e2eMs,
-                    uploadMs,
-                    serverProcMs,
-                    downloadMs,
-                    parseMs,
-                    uploadBytes,
-                    uncompressedBytes,
-                    downloadBytes,  // Compressed size
-                    detectionCount,
-                    avgConfidence,
-                    keypointAvgConf
-                );
-            }
-
-            // Update SharedInferenceHUD with metrics (NEW)
             if (m_sharedHUD != null)
             {
                 m_sharedHUD.UpdateMetrics(
@@ -565,28 +447,27 @@ namespace PassthroughCameraSamples.PoseEstimation
                     uncompressedBytes,
                     downloadBytes,
                     detectionCount,
-                    avgConfidence,
-                    keypointAvgConf
+                    0f,  // avgConfidence (segmentation doesn't have detection confidence)
+                    0f   // keypointAvgConf (segmentation doesn't have keypoints)
                 );
             }
 
-            // Store timing data for next frame's HTTP headers (to log in Excel)
+            // Store timing data for next frame's HTTP headers
             m_lastE2eMs = e2eMs;
             m_lastUploadMs = uploadMs;
             m_lastDownloadMs = downloadMs;
             m_lastParseMs = parseMs;
             m_lastUploadBytes = uploadBytes;
-            m_lastDownloadBytes = uncompressedBytes;  // Uncompressed size for Excel logging
-            m_lastDownloadBytesCompressed = downloadBytes;  // Compressed size for Excel logging
+            m_lastDownloadBytes = uncompressedBytes;
+            m_lastDownloadBytesCompressed = downloadBytes;
         }
 
         // ============================================================================
-        // JSON FIELD EXTRACTION - Bypasses large segmentation mask
+        // JSON FIELD EXTRACTION - Bypasses large arrays
         // ============================================================================
 
         /// <summary>
         /// Extracts a specific field from JSON without parsing the entire document.
-        /// This bypasses the huge segmentation mask that causes full parsing to fail.
         /// </summary>
         private string ExtractJsonField(string json, string fieldName)
         {
@@ -595,7 +476,7 @@ namespace PassthroughCameraSamples.PoseEstimation
 
             if (fieldStart < 0)
             {
-                Debug.LogError($"[POSE JSON] Field '{fieldName}' not found in JSON");
+                Debug.LogError($"[SEG JSON] Field '{fieldName}' not found in JSON");
                 return null;
             }
 
@@ -610,7 +491,7 @@ namespace PassthroughCameraSamples.PoseEstimation
 
             if (valueStart >= json.Length)
             {
-                Debug.LogError($"[POSE JSON] Unexpected end of JSON after field '{fieldName}'");
+                Debug.LogError($"[SEG JSON] Unexpected end of JSON after field '{fieldName}'");
                 return null;
             }
 
@@ -625,9 +506,13 @@ namespace PassthroughCameraSamples.PoseEstimation
             {
                 endChar = ']';
             }
+            else if (startChar == 'n')  // null
+            {
+                return "null";
+            }
             else
             {
-                Debug.LogError($"[POSE JSON] Field '{fieldName}' does not start with {{ or [");
+                Debug.LogError($"[SEG JSON] Field '{fieldName}' does not start with {{ or [ or null");
                 return null;
             }
 
@@ -679,12 +564,12 @@ namespace PassthroughCameraSamples.PoseEstimation
 
             if (depth != 0)
             {
-                Debug.LogError($"[POSE JSON] Mismatched brackets for field '{fieldName}'");
+                Debug.LogError($"[SEG JSON] Mismatched brackets for field '{fieldName}'");
                 return null;
             }
 
             string extracted = json.Substring(valueStart, valueEnd - valueStart);
-            Debug.Log($"[POSE JSON] Extracted '{fieldName}': {extracted.Length} chars");
+            Debug.Log($"[SEG JSON] Extracted '{fieldName}': {extracted.Length} chars");
             return extracted;
         }
 
@@ -715,7 +600,7 @@ namespace PassthroughCameraSamples.PoseEstimation
                 return null;
             }
 
-            // Find end of value (comma, closing brace, or end of string)
+            // Find end of value
             int valueEnd = valueStart;
             bool inString = json[valueStart] == '"';
 
@@ -727,7 +612,7 @@ namespace PassthroughCameraSamples.PoseEstimation
                 // Find closing quote
                 while (valueEnd < json.Length && json[valueEnd] != '"')
                 {
-                    if (json[valueEnd] == '\\') valueEnd++; // Skip escaped characters
+                    if (json[valueEnd] == '\\') valueEnd++;
                     valueEnd++;
                 }
             }
@@ -749,3 +634,5 @@ namespace PassthroughCameraSamples.PoseEstimation
         }
     }
 }
+
+

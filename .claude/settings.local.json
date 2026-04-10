@@ -1,24 +1,16 @@
 {
   "permissions": {
     "allow": [
-      "Bash(mkdir:*)",
-      "Skill(unity-mcp-skill)",
-      "mcp__UnityMCP__manage_scene",
-      "mcp__UnityMCP__find_gameobjects",
-      "mcp__UnityMCP__manage_components",
-      "mcp__UnityMCP__manage_build",
-      "mcp__UnityMCP__refresh_unity",
-      "mcp__UnityMCP__read_console",
-      "Bash(dir \"C:\\Repo\\Github\\vision_server\\app\")",
-      "Bash(conda run:*)",
-      "mcp__UnityMCP__manage_gameobject",
-      "Bash(adb logcat:*)",
-      "Bash(findstr:*)",
-      "Bash(Select-Object -Last 30)",
-      "Bash(netstat:*)",
-      "WebFetch(domain:raw.githubusercontent.com)",
-      "mcp__UnityMCP__batch_execute",
-      "Bash(git add:*)"
+      "Bash(powershell \"(Get-Content ''Assets\\PassthroughCameraApiSamples\\Segmentation\\Scripts\\Segmentation3DRenderer.cs'' -Raw) | Set-Content ''Assets\\PassthroughCameraApiSamples\\Segmentation\\Scripts\\Segmentation3DRenderer.cs''\")",
+      "Bash(powershell \"Start-Sleep -Seconds 12; Get-Content ''C:\\Users\\user\\AppData\\Local\\Unity\\Editor\\Editor.log'' -Tail 80 | Select-String ''Compilation succeeded|CompilerOutput|Segmentation3DRenderer''\")",
+      "Bash(powershell \"Get-Content ''C:\\Users\\user\\AppData\\Local\\Unity\\Editor\\Editor.log'' -Tail 150 | Select-String ''AUTO-CONFIG|Compilation|error CS0246''\")",
+      "Bash(powershell \"Get-Content ''C:\\Users\\user\\AppData\\Local\\Unity\\Editor\\Editor.log'' -Tail 50 | Select-String ''error CS|Compilation succeeded|Tundra build''\")",
+      "Bash(powershell \"Get-Content ''C:\\Users\\user\\AppData\\Local\\Unity\\Editor\\Editor.log'' | Select-String ''Compilation finished|Tundra build|error CS'' | Select-Object -Last 10\")",
+      "Bash(powershell \"Get-Content ''C:\\Users\\user\\AppData\\Local\\Unity\\Editor\\Editor.log'' -Tail 100 | Select-String ''Compilation|error CS|ServerConfig''\")",
+      "Bash(powershell \"Get-Content ''C:\\Users\\user\\AppData\\Local\\Unity\\Editor\\Editor.log'' -Tail 50 | Select-String ''error CS|warning CS'' | Select-Object -First 10\")",
+      "Bash(powershell:*)",
+      "Bash(dir:*)",
+      "Skill(unity-mcp-skill)"
     ],
     "deny": [],
     "ask": []
