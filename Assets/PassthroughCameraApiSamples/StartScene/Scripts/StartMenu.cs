@@ -71,7 +71,7 @@ namespace PassthroughCameraSamples.StartScene
                     else if (sceneName.Contains("DepthEstimation"))
                         sceneName = "Depth Estimation (5 FPS)";
                     else if (sceneName.Contains("Segmentation"))
-                        sceneName = "Segmentation (RGB-D)";
+                        sceneName = "Segmentation (10 FPS)";
 
                     _ = uiBuilder.AddButton(sceneName, () => LoadScene(scene.Item1), -1, DebugUIBuilder.DEBUG_PANE_LEFT);
                 }

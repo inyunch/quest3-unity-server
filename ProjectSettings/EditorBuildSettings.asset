@@ -31,7 +31,7 @@ EditorBuildSettings:
     guid: a45f813dd4cef3241b6132e8b6a97e58
   - enabled: 1
     path: Assets/PassthroughCameraApiSamples/Segmentation/Segmentation.unity
-    guid: fe6ddd342c154ccea48f1806f0ffc544
+    guid: 3266f3ba315fda242b27ef6d56b26729
   m_configObjects:
     Unity.XR.Oculus.Settings: {fileID: 11400000, guid: 5c1316113a9754a42b810ebaa5b713ab, type: 2}
     com.unity.xr.management.loader_settings: {fileID: 11400000, guid: a971eac5e950046e586c5e153e32d05c, type: 2}

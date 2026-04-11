@@ -142,7 +142,15 @@ namespace PassthroughCameraSamples.Shared
             if (useServerConfig)
             {
                 // Use centralized ServerConfig
-                effectiveBaseUrl = ServerConfig.Instance.InferenceUrl;
+                // For Segmentation modes, use dedicated /segmentation endpoint
+                if (mode == InferenceMode.Segmentation || mode == InferenceMode.SegmentationWithDepth)
+                {
+                    effectiveBaseUrl = ServerConfig.Instance.SegmentationUrl;
+                }
+                else
+                {
+                    effectiveBaseUrl = ServerConfig.Instance.InferenceUrl;
+                }
             }
             else
             {
@@ -160,7 +168,18 @@ namespace PassthroughCameraSamples.Shared
                 }
             }
 
-            string url = $"{effectiveBaseUrl}?mode={modeParam}&include_mask={actualIncludeMask.ToString().ToLower()}&include_depth={actualIncludeDepth.ToString().ToLower()}";
+            // For Segmentation endpoint, don't add mode parameter (endpoint IS the mode)
+            string url;
+            if (mode == InferenceMode.Segmentation || mode == InferenceMode.SegmentationWithDepth)
+            {
+                // Segmentation endpoint doesn't need ?mode= parameter
+                url = effectiveBaseUrl;
+            }
+            else
+            {
+                // Other modes use /infer_human?mode=X
+                url = $"{effectiveBaseUrl}?mode={modeParam}&include_mask={actualIncludeMask.ToString().ToLower()}&include_depth={actualIncludeDepth.ToString().ToLower()}";
+            }
 
             return url;
         }
@@ -226,17 +245,37 @@ namespace PassthroughCameraSamples.Shared
 
         /// <summary>
         /// Validate configuration and log warnings for potential issues.
+        /// FIXED: Now validates the actual effective URL from BuildUrl() instead of baseUrl directly.
         /// </summary>
         public void Validate()
         {
-            if (string.IsNullOrEmpty(baseUrl))
+            // When useServerConfig is true, baseUrl can be empty - that's OK!
+            // Validate the ACTUAL effective URL instead
+            string effectiveUrl = BuildUrl();
+
+            if (string.IsNullOrEmpty(effectiveUrl))
             {
-                Debug.LogError("[InferenceConfig] Base URL is empty!");
+                Debug.LogError("[InferenceConfig] Effective URL is empty! Check ServerConfig asset.");
+                return;
             }
 
-            if (!baseUrl.StartsWith("http://") && !baseUrl.StartsWith("https://"))
+            if (!effectiveUrl.StartsWith("http://") && !effectiveUrl.StartsWith("https://"))
             {
-                Debug.LogWarning($"[InferenceConfig] Base URL should start with http:// or https://: {baseUrl}");
+                Debug.LogError($"[InferenceConfig] Effective URL should start with http:// or https://: {effectiveUrl}");
+                return;
+            }
+
+            // Only check baseUrl if useServerConfig is false
+            if (!useServerConfig)
+            {
+                if (string.IsNullOrEmpty(baseUrl))
+                {
+                    Debug.LogWarning("[InferenceConfig] Base URL is empty and useServerConfig is false! Using ServerConfig fallback.");
+                }
+                else if (!baseUrl.StartsWith("http://") && !baseUrl.StartsWith("https://"))
+                {
+                    Debug.LogWarning($"[InferenceConfig] Base URL should start with http:// or https://: {baseUrl}");
+                }
             }
 
             if (jpegQuality < 60)
@@ -278,93 +317,7 @@ namespace PassthroughCameraSamples.Shared
             Debug.Log($"[InferenceConfig] Target FPS: {targetFPS:F1} ({GetInferenceInterval() * 1000f:F0}ms interval)");
             Debug.Log($"[InferenceConfig] JPEG Quality: {jpegQuality}");
             Debug.Log($"[InferenceConfig] Expected Download: {GetExpectedDownloadSize()}");
-            // Show forced states for mask and depth
-            bool maskForced = (mode == InferenceMode.Segmentation || mode == InferenceMode.SegmentationWithDepth);
-            bool depthForced = (mode == InferenceMode.DepthEstimation || mode == InferenceMode.SegmentationWithDepth);
-
-            string maskStatus = maskForced ? "true (forced)" : includeMask.ToString().ToLower();
-            string depthStatus = depthForced ? "true (forced)" : includeDepth.ToString().ToLower();
-
-            Debug.Log($"[InferenceConfig] Include Mask: {maskStatus}");
-            Debug.Log($"[InferenceConfig] Include Depth: {depthStatus}");
-        }
-    }
-
-    /// <summary>
-    /// Helper to create InferenceConfig presets for common use cases.
-    /// </summary>
-    public static class InferenceConfigPresets
-    {
-        public static InferenceConfig FastObjectDetection()
-        {
-            return new InferenceConfig
-            {
-                mode = InferenceMode.ObjectDetection,
-                targetFPS = 10f,
-                jpegQuality = 80,
-                includeMask = false,
-                includeDepth = false
-            };
-        }
-
-        public static InferenceConfig PoseEstimation()
-        {
-            return new InferenceConfig
-            {
-                mode = InferenceMode.PoseEstimation,
-                targetFPS = 5f,
-                jpegQuality = 85,
-                includeMask = false,
-                includeDepth = false
-            };
-        }
-
-        public static InferenceConfig DepthEstimation()
-        {
-            return new InferenceConfig
-            {
-                mode = InferenceMode.DepthEstimation,
-                targetFPS = 5f,  // Lower FPS due to large download
-                jpegQuality = 80,
-                includeMask = false,
-                includeDepth = false  // Will be forced to true by mode
-            };
-        }
-
-        public static InferenceConfig FullPipeline()
-        {
-            return new InferenceConfig
-            {
-                mode = InferenceMode.Both,
-                targetFPS = 3f,  // Very low FPS for full pipeline
-                jpegQuality = 90,
-                includeMask = true,
-                includeDepth = true
-            };
-        }
-
-        public static InferenceConfig Segmentation()
-        {
-            return new InferenceConfig
-            {
-                mode = InferenceMode.Segmentation,
-                targetFPS = 5f,
-                jpegQuality = 80,
-                includeMask = false,  // Will be forced to true by mode
-                includeDepth = false
-            };
-        }
-
-        public static InferenceConfig SegmentationWithDepth()
-        {
-            return new InferenceConfig
-            {
-                mode = InferenceMode.SegmentationWithDepth,
-                targetFPS = 5f,  // Lower FPS due to large download
-                jpegQuality = 80,
-                includeMask = false,  // Will be forced to true by mode
-                includeDepth = false  // Will be forced to true by mode
-            };
+            Debug.Log($"[InferenceConfig] ==================================");
         }
     }
 }
