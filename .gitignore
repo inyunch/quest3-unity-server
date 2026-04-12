@@ -22,3 +22,22 @@ Packages/packages-lock.json
 nul
 output/
 passthroughcamera_BurstDebugInformation_DoNotShip/
+
+# Unity generated
+Assets/Plugins/Roslyn/
+Assets/Plugins/Roslyn.meta
+
+# Backup directories
+*_OLD_BACKUP/
+*_OLD_BACKUP.meta
+*.bak
+*.bak.meta
+
+# Temporary files
+*.tmp
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+
