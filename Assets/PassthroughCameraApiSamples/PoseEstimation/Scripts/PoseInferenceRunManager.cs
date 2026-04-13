@@ -46,6 +46,7 @@ namespace PassthroughCameraSamples.PoseEstimation
         private float m_lastUploadMs = 0f;
         private float m_lastDownloadMs = 0f;
         private float m_lastParseMs = 0f;
+        private int m_lastUploadBytesUncompressed = 0;
         private int m_lastUploadBytes = 0;
         private int m_lastDownloadBytes = 0;
         private int m_lastDownloadBytesCompressed = 0;
@@ -189,6 +190,10 @@ namespace PassthroughCameraSamples.PoseEstimation
             public int input_image_width;
             public int input_image_height;
             public float processing_time_ms;
+            public float server_queue_ms;
+            public float server_postprocess_ms;
+            public double t_server_recv;
+            public double t_server_send;
         }
 
         [System.Serializable]
@@ -246,11 +251,11 @@ namespace PassthroughCameraSamples.PoseEstimation
 
                 if (req.result == UnityWebRequest.Result.Success)
                 {
-                    Debug.Log($"[POSE SERVER TEST] ✓ Connection OK! Response: {req.downloadHandler.text}");
+                    Debug.Log($"[POSE SERVER TEST] ??Connection OK! Response: {req.downloadHandler.text}");
                 }
                 else
                 {
-                    Debug.LogError($"[POSE SERVER TEST] ✗ Connection FAILED: {req.error}");
+                    Debug.LogError($"[POSE SERVER TEST] ??Connection FAILED: {req.error}");
                     Debug.LogError($"[POSE SERVER TEST] Result: {req.result}");
                     Debug.LogError($"[POSE SERVER TEST] Response Code: {req.responseCode}");
                 }
@@ -288,13 +293,18 @@ namespace PassthroughCameraSamples.PoseEstimation
                 }
             }
 
-            // 2. Encode texture as JPEG (use configurable quality from InferenceConfig)
+            // 2. Calculate uncompressed size (original RGB data)
+            int uploadBytesUncompressed = tex2D.width * tex2D.height * 3; // RGB24 = 3 bytes per pixel
+
+            // 3. Encode texture as JPEG (use configurable quality from InferenceConfig)
             int jpegQuality = m_inferenceConfig.jpegQuality;
             byte[] jpegBytes = tex2D.EncodeToJPG(jpegQuality);
-            int uploadBytes = jpegBytes.Length;
-            Debug.Log($"[POSE SERVER] Encoded JPEG (quality={jpegQuality}): {uploadBytes} bytes ({tex2D.width}x{tex2D.height})");
+            int uploadBytesCompressed = jpegBytes.Length;
+            float compressionRatio = uploadBytesUncompressed > 0 ? (float)uploadBytesUncompressed / uploadBytesCompressed : 1f;
+            Debug.Log($"[POSE SERVER] Encoded JPEG (quality={jpegQuality}): {uploadBytesCompressed} bytes ({tex2D.width}x{tex2D.height}), " +
+                     $"uncompressed={uploadBytesUncompressed} bytes, {compressionRatio:F2}x compression");
 
-            // 3. Create multipart form POST
+            // 4. Create multipart form POST
             List<IMultipartFormSection> formData = new List<IMultipartFormSection>();
             formData.Add(new MultipartFormFileSection("image", jpegBytes, "frame.jpg", "image/jpeg"));
 
@@ -313,6 +323,7 @@ namespace PassthroughCameraSamples.PoseEstimation
             request.SetRequestHeader("X-Upload-Ms", m_lastUploadMs.ToString("F1"));
             request.SetRequestHeader("X-Download-Ms", m_lastDownloadMs.ToString("F1"));
             request.SetRequestHeader("X-Parse-Ms", m_lastParseMs.ToString("F1"));
+            request.SetRequestHeader("X-Upload-Bytes-Uncompressed", m_lastUploadBytesUncompressed.ToString());
             request.SetRequestHeader("X-Upload-Bytes", m_lastUploadBytes.ToString());
             request.SetRequestHeader("X-Download-Bytes", m_lastDownloadBytes.ToString());
             request.SetRequestHeader("X-Download-Bytes-Compressed", m_lastDownloadBytesCompressed.ToString());
@@ -326,20 +337,9 @@ namespace PassthroughCameraSamples.PoseEstimation
 
             Debug.Log($"[POSE SEND] Sending frame {m_frameId} to server...");
 
-            // 4. Send request and measure UPLOAD time
-            float uploadStartTime = Time.realtimeSinceStartup;
-
+            // 4. Send request (upload time will be calculated later based on network total and data size ratio)
             // Start the request
             UnityWebRequestAsyncOperation asyncOp = request.SendWebRequest();
-
-            // Poll until upload completes
-            while (!asyncOp.isDone && request.uploadProgress < 1.0f)
-            {
-                yield return null;
-            }
-
-            float uploadDoneTime = Time.realtimeSinceStartup;
-            float uploadMs = (uploadDoneTime - uploadStartTime) * 1000f;
 
             // Wait for response to complete
             yield return asyncOp;
@@ -428,18 +428,31 @@ namespace PassthroughCameraSamples.PoseEstimation
             // Parse time measurement complete
             float parseMs = (Time.realtimeSinceStartup - parseStartTime) * 1000f;
 
-            // Calculate E2E time and derive download time
+            // Calculate E2E time and server times from response
             float e2eMs = (Time.realtimeSinceStartup - e2eStartTime) * 1000f;
-            int downloadBytes = (int)request.downloadedBytes;
+            int downloadBytesCompressed = (int)request.downloadedBytes;
+            float serverQueueMs = response.server_queue_ms;
             float serverProcMs = response.processing_time_ms;
-            float downloadMs = Mathf.Max(0f, e2eMs - uploadMs - serverProcMs - parseMs);
+            float serverPostprocessMs = response.server_postprocess_ms;
+            float serverTotalMs = serverQueueMs + serverProcMs + serverPostprocessMs;
 
-            Debug.Log($"[TIMING] E2E={e2eMs:F0}ms (upload={uploadMs:F0}ms server={serverProcMs:F0}ms download={downloadMs:F0}ms parse={parseMs:F0}ms)");
+            // Calculate network time (upload + download)
+            float networkTotalMs = Mathf.Max(0f, e2eMs - serverTotalMs - parseMs);
+
+            // Allocate network time based on compressed data size ratio
+            int totalBytes = uploadBytesCompressed + downloadBytesCompressed;
+            float uploadRatio = totalBytes > 0 ? (float)uploadBytesCompressed / totalBytes : 0.5f;
+            float downloadRatio = 1.0f - uploadRatio;
+
+            float uploadMs = networkTotalMs * uploadRatio;
+            float downloadMs = networkTotalMs * downloadRatio;
+
+            Debug.Log($"[TIMING] E2E={e2eMs:F0}ms (upload={uploadMs:F0}ms queue={serverQueueMs:F0}ms server={serverProcMs:F0}ms post={serverPostprocessMs:F0}ms download={downloadMs:F0}ms parse={parseMs:F0}ms)");
 
             // Log both compressed and uncompressed sizes
-            int uncompressedBytes = System.Text.Encoding.UTF8.GetByteCount(request.downloadHandler.text);
-            float compressionRatio = downloadBytes > 0 ? (float)uncompressedBytes / downloadBytes : 1f;
-            Debug.Log($"[BYTES] Upload={uploadBytes} Download={downloadBytes}B (compressed), {uncompressedBytes}B (uncompressed), {compressionRatio:F2}x compression");
+            int downloadBytesUncompressed = System.Text.Encoding.UTF8.GetByteCount(request.downloadHandler.text);
+            float downloadCompressionRatio = downloadBytesCompressed > 0 ? (float)downloadBytesUncompressed / downloadBytesCompressed : 1f;
+            Debug.Log($"[BYTES] Upload={uploadBytesCompressed}B (compressed from {uploadBytesUncompressed}B), Download={downloadBytesCompressed}B (compressed), {downloadBytesUncompressed}B (uncompressed), {downloadCompressionRatio:F2}x compression");
 
             // Detailed parse verification logs
             Debug.Log($"[POSE PARSE] skeleton null={response.skeleton == null}");
@@ -543,9 +556,9 @@ namespace PassthroughCameraSamples.PoseEstimation
                     serverProcMs,
                     downloadMs,
                     parseMs,
-                    uploadBytes,
-                    uncompressedBytes,
-                    downloadBytes,  // Compressed size
+                    uploadBytesCompressed,
+                    downloadBytesUncompressed,
+                    downloadBytesCompressed,  // Compressed size
                     detectionCount,
                     avgConfidence,
                     keypointAvgConf
@@ -561,9 +574,9 @@ namespace PassthroughCameraSamples.PoseEstimation
                     serverProcMs,
                     downloadMs,
                     parseMs,
-                    uploadBytes,
-                    uncompressedBytes,
-                    downloadBytes,
+                    uploadBytesCompressed,
+                    downloadBytesUncompressed,
+                    downloadBytesCompressed,
                     detectionCount,
                     avgConfidence,
                     keypointAvgConf
@@ -575,9 +588,10 @@ namespace PassthroughCameraSamples.PoseEstimation
             m_lastUploadMs = uploadMs;
             m_lastDownloadMs = downloadMs;
             m_lastParseMs = parseMs;
-            m_lastUploadBytes = uploadBytes;
-            m_lastDownloadBytes = uncompressedBytes;  // Uncompressed size for Excel logging
-            m_lastDownloadBytesCompressed = downloadBytes;  // Compressed size for Excel logging
+            m_lastUploadBytesUncompressed = uploadBytesUncompressed;  // Original RGB size
+            m_lastUploadBytes = uploadBytesCompressed;  // Compressed JPEG size
+            m_lastDownloadBytes = downloadBytesUncompressed;  // Uncompressed JSON size
+            m_lastDownloadBytesCompressed = downloadBytesCompressed;  // Compressed network transfer size
         }
 
         // ============================================================================
@@ -749,3 +763,5 @@ namespace PassthroughCameraSamples.PoseEstimation
         }
     }
 }
+
+
