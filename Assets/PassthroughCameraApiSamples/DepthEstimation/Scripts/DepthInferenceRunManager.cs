@@ -110,7 +110,7 @@ namespace PassthroughCameraSamples.DepthEstimation
 
             if (timeSinceLastInference < targetInterval)
             {
-                m_droppedFrames++;
+                // NOTE: m_droppedFrames++ is now handled in SharedInferenceHUD.ReportDroppedFrame()
                 if (m_sharedHUD != null)
                 {
                     m_sharedHUD.ReportDroppedFrame();
@@ -120,7 +120,7 @@ namespace PassthroughCameraSamples.DepthEstimation
 
             if (m_inferenceInProgress)
             {
-                m_frozenFrames++;
+                // NOTE: m_frozenFrames++ is now handled in SharedInferenceHUD.ReportFrozenFrame()
                 if (m_sharedHUD != null)
                 {
                     m_sharedHUD.ReportFrozenFrame();
@@ -145,7 +145,7 @@ namespace PassthroughCameraSamples.DepthEstimation
             yield return RunServerInference(targetTexture);
 
             m_inferenceInProgress = false;
-            m_totalFrames++;
+            // NOTE: m_totalFrames++ is now handled in SharedInferenceHUD.UpdateMetrics()
         }
 
         // JSON Response Classes - Updated for /infer_human with full depth map

@@ -89,6 +89,10 @@ namespace PassthroughCameraSamples.Shared
         [Range(60, 100)]
         public int jpegQuality = 80;
 
+        [Tooltip("Downsample factor before upload (1=original, 2=half size, 4=quarter size). Higher = smaller upload, faster send. Recommended: 2 for good balance.")]
+        [Range(1, 4)]
+        public int downsampleFactor = 1;
+
         [Header("FPS Configuration")]
         [Tooltip("Target inference FPS for this mode. Lower FPS = less frequent inference, better performance.")]
         [Range(1f, 30f)]
@@ -321,3 +325,5 @@ namespace PassthroughCameraSamples.Shared
         }
     }
 }
+
+

@@ -178,7 +178,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 if (timeSinceLastInference < targetInterval)
                 {
                     // Drop frame - respecting target FPS
-                    m_droppedFrames++;
+                    // NOTE: m_droppedFrames++ is now handled in SharedInferenceHUD.ReportDroppedFrame()
                     if (m_sharedHUD != null)
                     {
                         m_sharedHUD.ReportDroppedFrame();
@@ -190,7 +190,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 // Check if previous inference is still in progress (freeze frame)
                 if (m_inferenceInProgress)
                 {
-                    m_frozenFrames++;
+                    // NOTE: m_frozenFrames++ is now handled in SharedInferenceHUD.ReportFrozenFrame()
                     if (m_sharedHUD != null)
                     {
                         m_sharedHUD.ReportFrozenFrame();
@@ -285,7 +285,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             if (m_useServerInference)
             {
                 m_inferenceInProgress = false;
-                m_totalFrames++;
+                // NOTE: m_totalFrames++ is now handled in SharedInferenceHUD.UpdateMetrics()
             }
 
             // Checking if spatial anchor is tracked ensures bounding boxes are placed at correct world space positions.
@@ -474,16 +474,55 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 }
             }
 
-            // 2. Calculate uncompressed size (original RGB data)
-            int uploadBytesUncompressed = tex2D.width * tex2D.height * 3; // RGB24 = 3 bytes per pixel
+            // 2. Downsample texture if configured (reduces upload size significantly)
+            Texture2D textureToEncode = tex2D;
+            int originalWidth = tex2D.width;
+            int originalHeight = tex2D.height;
+            int downsampleFactor = m_inferenceConfig.downsampleFactor;
+
+            if (downsampleFactor > 1)
+            {
+                int downsampledWidth = tex2D.width / downsampleFactor;
+                int downsampledHeight = tex2D.height / downsampleFactor;
+
+                // Create temporary RenderTexture for downsampling
+                RenderTexture rt = RenderTexture.GetTemporary(downsampledWidth, downsampledHeight, 0, RenderTextureFormat.ARGB32);
+                rt.filterMode = FilterMode.Bilinear;
+
+                // Blit original texture to downsampled RenderTexture
+                Graphics.Blit(tex2D, rt);
+
+                // Read back to Texture2D
+                RenderTexture previous = RenderTexture.active;
+                RenderTexture.active = rt;
+                Texture2D downsampledTex = new Texture2D(downsampledWidth, downsampledHeight, TextureFormat.RGB24, false);
+                downsampledTex.ReadPixels(new Rect(0, 0, downsampledWidth, downsampledHeight), 0, 0);
+                downsampledTex.Apply();
+                RenderTexture.active = previous;
+
+                // Release temporary RenderTexture
+                RenderTexture.ReleaseTemporary(rt);
+
+                textureToEncode = downsampledTex;
+                Debug.Log($"[DETECTION DOWNSAMPLE] {originalWidth}x{originalHeight} → {downsampledWidth}x{downsampledHeight} (factor={downsampleFactor})");
+            }
+
+            // 2.5. Calculate uncompressed size (AFTER downsampling, using actual texture to encode)
+            int uploadBytesUncompressed = textureToEncode.width * textureToEncode.height * 3; // RGB24 = 3 bytes per pixel
 
             // 3. Encode texture as JPEG (use configurable quality from InferenceConfig)
             int jpegQuality = m_inferenceConfig.jpegQuality;
-            byte[] jpegBytes = tex2D.EncodeToJPG(jpegQuality);
+            byte[] jpegBytes = textureToEncode.EncodeToJPG(jpegQuality);
             int uploadBytesCompressed = jpegBytes.Length;
             float compressionRatio = uploadBytesUncompressed > 0 ? (float)uploadBytesUncompressed / uploadBytesCompressed : 1f;
-            Debug.Log($"[SERVER] Encoded JPEG (quality={jpegQuality}): {uploadBytesCompressed} bytes ({tex2D.width}x{tex2D.height}), " +
+            Debug.Log($"[SERVER] Encoded JPEG (quality={jpegQuality}): {uploadBytesCompressed} bytes ({textureToEncode.width}x{textureToEncode.height}), " +
                      $"uncompressed={uploadBytesUncompressed} bytes, {compressionRatio:F2}x compression");
+
+            // Clean up downsampled texture if created
+            if (downsampleFactor > 1 && textureToEncode != tex2D)
+            {
+                Destroy(textureToEncode);
+            }
 
             // 4. Create multipart form POST
             List<IMultipartFormSection> formData = new List<IMultipartFormSection>();
