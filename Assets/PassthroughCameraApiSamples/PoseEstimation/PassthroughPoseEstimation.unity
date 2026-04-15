@@ -1207,8 +1207,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 6b353b78e731d9a4b8fb684ca60414b7, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  m_serverIp: 192.168.0.135
-  m_serverPort: 8000
+  m_serverIp: 10.0.0.201
+  m_serverPort: 8001
   m_testOnStart: 1
   m_repeatTestInterval: 0
   m_statusText: {fileID: 0}
@@ -2164,15 +2164,16 @@ MonoBehaviour:
   m_sharedHUD: {fileID: 0}
   m_inferenceConfig:
     useServerConfig: 1
-    baseUrl: http://192.168.0.135:8001/infer_human
+    baseUrl: http://35.9.28.119:8001/infer_human
     mode: 2
     includeMask: 0
     includeDepth: 0
-    jpegQuality: 80
+    jpegQuality: 60
+    downsampleFactor: 2
     targetFPS: 5
   m_minKeypointScore: 0.3
   m_serverUrl: 
-  m_jpegQuality: 80
+  m_jpegQuality: 60
 --- !u!224 &8587535026074093613 stripped
 RectTransform:
   m_CorrespondingSourceObject: {fileID: 8722207748505512711, guid: 259c0c899b7e0c14aa431eefdc0aacc6, type: 3}

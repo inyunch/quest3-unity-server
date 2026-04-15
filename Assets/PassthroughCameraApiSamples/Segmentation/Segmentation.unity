@@ -2367,7 +2367,7 @@ PrefabInstance:
     - target: {fileID: 2184060436030677583, guid: c9740e6c6f47fd442b765d80a969c45b, type: 3}
       propertyPath: m_environmentRaycast
       value: 
-      objectReference: {fileID: 1721288809}
+      objectReference: {fileID: 0}
     - target: {fileID: 2184060436030677583, guid: c9740e6c6f47fd442b765d80a969c45b, type: 3}
       propertyPath: m_segmentationManager
       value: 
@@ -2381,17 +2381,21 @@ PrefabInstance:
       value: 
       objectReference: {fileID: 0}
     - target: {fileID: 2681575481727882275, guid: c9740e6c6f47fd442b765d80a969c45b, type: 3}
+      propertyPath: m_jpegQuality
+      value: 80
+      objectReference: {fileID: 0}
+    - target: {fileID: 2681575481727882275, guid: c9740e6c6f47fd442b765d80a969c45b, type: 3}
       propertyPath: m_cameraAccess
       value: 
       objectReference: {fileID: 1373946501}
     - target: {fileID: 2681575481727882275, guid: c9740e6c6f47fd442b765d80a969c45b, type: 3}
       propertyPath: m_inferenceHUD
       value: 
-      objectReference: {fileID: 230268728}
+      objectReference: {fileID: 0}
     - target: {fileID: 2681575481727882275, guid: c9740e6c6f47fd442b765d80a969c45b, type: 3}
       propertyPath: m_uiMenuManager
       value: 
-      objectReference: {fileID: 6846995557286463107}
+      objectReference: {fileID: 0}
     - target: {fileID: 2681575481727882275, guid: c9740e6c6f47fd442b765d80a969c45b, type: 3}
       propertyPath: m_useServerInference
       value: 1
@@ -2400,6 +2404,14 @@ PrefabInstance:
       propertyPath: m_segmentationManager
       value: 
       objectReference: {fileID: 1542092273}
+    - target: {fileID: 2681575481727882275, guid: c9740e6c6f47fd442b765d80a969c45b, type: 3}
+      propertyPath: m_inferenceConfig.jpegQuality
+      value: 80
+      objectReference: {fileID: 0}
+    - target: {fileID: 2681575481727882275, guid: c9740e6c6f47fd442b765d80a969c45b, type: 3}
+      propertyPath: m_inferenceConfig.downsampleFactor
+      value: 1
+      objectReference: {fileID: 0}
     - target: {fileID: 5228241647023865434, guid: c9740e6c6f47fd442b765d80a969c45b, type: 3}
       propertyPath: m_Name
       value: SentisInferenceManagerPrefab
@@ -2466,5 +2478,3 @@ SceneRoots:
   - {fileID: 1373946500}
   - {fileID: 1884619606}
   - {fileID: 1646199569}
-
-

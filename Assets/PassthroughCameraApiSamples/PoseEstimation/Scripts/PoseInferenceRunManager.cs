@@ -40,6 +40,7 @@ namespace PassthroughCameraSamples.PoseEstimation
         [SerializeField, Range(60, 100)] private int m_jpegQuality = 80;  // DEPRECATED
 
         private int m_frameId = 0;
+        private string m_sessionId;  // GUID to uniquely identify this recording session
 
         // Store timing data from previous frame to send as headers in next request
         private float m_lastE2eMs = 0f;
@@ -60,8 +61,35 @@ namespace PassthroughCameraSamples.PoseEstimation
         private int m_droppedFrames = 0;
         private int m_frozenFrames = 0;
 
+        // PHASE 1: Frame trace tracking (parallel processing preparation)
+        private Dictionary<int, FrameTrace> m_frameTraces = new Dictionary<int, FrameTrace>();
+        private object m_frameTracesLock = new object();
+
+        // PHASE 2: Parallel request tracking
+        private Dictionary<int, UnityWebRequest> m_pendingRequests = new Dictionary<int, UnityWebRequest>();
+
+        // PHASE 3: Display control
+        private int m_lastDisplayedFrameId = -1;
+
+        // Delayed telemetry: Store last completed frame's final state to send in next request
+        private FrameTrace m_lastCompletedTrace = null;  // DEPRECATED - will be removed after migration
+        private Queue<FrameTrace> m_completedFramesQueue = new Queue<FrameTrace>();  // PRIORITY 1: Queue for all completed frames
+
+        // PRIORITY 3: Freeze frame calculation
+        private int m_framesSinceLastDisplay = 0;  // Counts Unity Update() calls between displayed frames
+
+        // PHASE 6: Frame cleanup and optimization
+        private const int MAX_FRAME_TRACES = 100;  // Limit memory usage
+        private const float FRAME_TIMEOUT_SECONDS = 5.0f;  // Mark as Failed after 5 seconds
+        private float m_lastMetricsLogTime = 0f;
+        private const float METRICS_LOG_INTERVAL = 10.0f;  // Log metrics every 10 seconds
+
         private IEnumerator Start()
         {
+            // PHASE 1: Generate unique session ID for this recording session
+            m_sessionId = System.Guid.NewGuid().ToString();
+            Debug.Log($"[SESSION] Started session: {m_sessionId}");
+
             Debug.Log("[POSE INF] PoseInferenceRunManager started");
 
             // Reference checks
@@ -123,7 +151,8 @@ namespace PassthroughCameraSamples.PoseEstimation
             if (timeSinceLastInference < targetInterval)
             {
                 // Drop frame - respecting target FPS
-                // NOTE: m_droppedFrames++ is now handled in SharedInferenceHUD.ReportDroppedFrame()
+                // NOTE: This is FPS throttling, NOT the new dropped frame definition
+                // (new definition: received from server but never displayed)
                 if (m_sharedHUD != null)
                 {
                     m_sharedHUD.ReportDroppedFrame();
@@ -131,19 +160,14 @@ namespace PassthroughCameraSamples.PoseEstimation
                 yield break;
             }
 
-            // Check if previous inference is still in progress (freeze frame)
-            if (m_inferenceInProgress)
-            {
-                // NOTE: m_frozenFrames++ is now handled in SharedInferenceHUD.ReportFrozenFrame()
-                if (m_sharedHUD != null)
-                {
-                    m_sharedHUD.ReportFrozenFrame();
-                }
-                yield break;
-            }
+            // PHASE 2: REMOVED m_inferenceInProgress check to allow parallel requests
+            // Old serial code (REMOVED):
+            // if (m_inferenceInProgress) {
+            //     m_frozenFrames++;
+            //     yield break;
+            // }
+            // m_inferenceInProgress = true;
 
-            // Mark inference as in progress
-            m_inferenceInProgress = true;
             m_lastInferenceTime = currentTime;
 
             [DllImport("OVRPlugin", CallingConvention = CallingConvention.Cdecl)]
@@ -151,7 +175,7 @@ namespace PassthroughCameraSamples.PoseEstimation
             if (!ovrp_GetNodePoseStateAtTime(OVRPlugin.GetTimeInSeconds(), OVRPlugin.Node.Head, out _).IsSuccess())
             {
                 Debug.Log("ovrp_GetNodePoseStateAtTime failed, which means 'm_cameraAccess.GetCameraPose()' is not reliable, skipping.");
-                m_inferenceInProgress = false;
+                // PHASE 2: No m_inferenceInProgress to clear (removed for parallel)
                 yield break;
             }
 
@@ -163,8 +187,7 @@ namespace PassthroughCameraSamples.PoseEstimation
             // Run server inference
             yield return RunServerInference(targetTexture);
 
-            // Mark inference as complete
-            m_inferenceInProgress = false;
+            // PHASE 2: No need to mark m_inferenceInProgress = false (removed for parallel)
             // NOTE: m_totalFrames++ is now handled in SharedInferenceHUD.UpdateMetrics()
 
             // Checking if spatial anchor is tracked ensures skeleton is placed at correct world space positions
@@ -272,6 +295,16 @@ namespace PassthroughCameraSamples.PoseEstimation
             m_frameId++;
             float e2eStartTime = Time.realtimeSinceStartup;
 
+            // PHASE 1: Create frame trace for this request
+            FrameTrace trace = new FrameTrace(m_frameId);
+            trace.session_id = m_sessionId;  // Set session ID for global uniqueness
+            // Note: unity_send_ts is set by constructor using TimestampUtil.GetUnixTimestampMs()
+            lock (m_frameTracesLock)
+            {
+                m_frameTraces[m_frameId] = trace;
+            }
+            Debug.Log($"[FRAME TRACE] Created trace for frame {m_frameId}: {trace}");
+
             // 1. Convert texture to Texture2D if needed
             Texture2D tex2D = texture as Texture2D;
             if (tex2D == null)
@@ -354,6 +387,7 @@ namespace PassthroughCameraSamples.PoseEstimation
 
             // Add HTTP headers (including timing data from previous frame)
             request.SetRequestHeader("X-Scene-Name", "PoseEstimation");
+            request.SetRequestHeader("X-Session-Id", m_sessionId);
             request.SetRequestHeader("X-Frame-Id", m_frameId.ToString());
 
             // Send timing data from PREVIOUS frame (frame N-1) for Excel logging
@@ -374,7 +408,48 @@ namespace PassthroughCameraSamples.PoseEstimation
             request.SetRequestHeader("X-Freeze-Frames", m_frozenFrames.ToString());
             request.SetRequestHeader("X-Freeze-Ratio", freezeRatio.ToString("F4"));
 
+            // DELAYED TELEMETRY: Send previous frame's final state (Frame N-1's complete lifecycle)
+            // PRIORITY 1: Dequeue from queue if available, otherwise fall back to legacy
+            FrameTrace traceToSend = null;
+            if (m_completedFramesQueue.Count > 0)
+            {
+                traceToSend = m_completedFramesQueue.Dequeue();
+                Debug.Log($"[TELEMETRY QUEUE] Dequeued frame {traceToSend.frame_id} (state={traceToSend.state}) for delayed headers (remaining: {m_completedFramesQueue.Count})");
+            }
+            else if (m_lastCompletedTrace != null)
+            {
+                traceToSend = m_lastCompletedTrace;
+                Debug.LogWarning($"[TELEMETRY QUEUE] Queue empty, using legacy m_lastCompletedTrace (frame {traceToSend.frame_id})");
+            }
+
+            if (traceToSend != null)
+            {
+                request.SetRequestHeader("X-Prev-Session-Id", traceToSend.session_id);  // PRIORITY 2
+                request.SetRequestHeader("X-Prev-Frame-Id", traceToSend.frame_id.ToString());
+                request.SetRequestHeader("X-Prev-Unity-Send-Ts", traceToSend.unity_send_ts.ToString());
+                request.SetRequestHeader("X-Prev-Unity-Receive-Ts", traceToSend.unity_receive_ts.ToString());
+                request.SetRequestHeader("X-Prev-Unity-Display-Ts", traceToSend.unity_display_ts?.ToString() ?? "0");
+                request.SetRequestHeader("X-Prev-Unity-Drop-Ts", traceToSend.unity_drop_ts?.ToString() ?? "0");
+                request.SetRequestHeader("X-Prev-Server-Receive-Ts", traceToSend.server_receive_ts.ToString());
+                request.SetRequestHeader("X-Prev-Server-Send-Ts", traceToSend.server_send_ts.ToString());
+                request.SetRequestHeader("X-Prev-Final-State", traceToSend.state.ToString());
+                request.SetRequestHeader("X-Prev-Drop-Reason", traceToSend.drop_reason ?? "");
+                request.SetRequestHeader("X-Prev-Error-Reason", traceToSend.error_reason ?? "");
+                request.SetRequestHeader("X-Prev-Freeze-Frames", traceToSend.freeze_frames.ToString());  // PRIORITY 3
+            }
+
             Debug.Log($"[POSE SEND] Sending frame {m_frameId} to server...");
+
+            // PHASE 1: Update trace with upload bytes
+            trace.upload_bytes_uncompressed = uploadBytesUncompressed;
+            trace.upload_bytes_compressed = uploadBytesCompressed;
+
+            // PHASE 2: Track pending request
+            lock (m_frameTracesLock)
+            {
+                m_pendingRequests[m_frameId] = request;
+            }
+            Debug.Log($"[PARALLEL] Frame {m_frameId} added to pending requests. Total pending: {m_pendingRequests.Count}");
 
             // 4. Send request (upload time will be calculated later based on network total and data size ratio)
             // Start the request
@@ -383,7 +458,17 @@ namespace PassthroughCameraSamples.PoseEstimation
             // Wait for response to complete
             yield return asyncOp;
 
+            // PHASE 2: Remove from pending requests after completion
+            lock (m_frameTracesLock)
+            {
+                m_pendingRequests.Remove(m_frameId);
+            }
+            Debug.Log($"[PARALLEL] Frame {m_frameId} removed from pending. Remaining: {m_pendingRequests.Count}");
+
             Debug.Log($"[POSE SERVER SEND] <<< Request completed. Result: {request.result}");
+
+            // PHASE 1: Mark receive time
+            float receiveTime = Time.realtimeSinceStartup;
 
             if (request.result != UnityWebRequest.Result.Success)
             {
@@ -391,9 +476,27 @@ namespace PassthroughCameraSamples.PoseEstimation
                 Debug.LogError($"[POSE SERVER] Result type: {request.result}");
                 Debug.LogError($"[POSE SERVER] Response code: {request.responseCode}");
                 Debug.LogError($"[POSE SERVER] URL was: {serverUrl}");
-                m_inferenceInProgress = false;  // Release lock on error
+
+                // PHASE 1: Mark trace as failed
+                trace.MarkFailed($"{request.result}: {request.error}");
+                Debug.Log($"[FRAME TRACE] Frame {m_frameId} failed: {trace}");
+
+                // PRIORITY 1: Enqueue failed frame for telemetry
+                m_completedFramesQueue.Enqueue(trace);
+                Debug.Log($"[TELEMETRY QUEUE] Frame {trace.frame_id} FAILED → queued (queue depth: {m_completedFramesQueue.Count})");
+
+                // PHASE 2: Remove request from pending dictionary
+                lock (m_frameTracesLock)
+                {
+                    m_pendingRequests.Remove(m_frameId);
+                }
+
                 yield break;
             }
+
+            // PHASE 1: Mark trace as completed (convert to Unix timestamp)
+            long receiveTimestamp = TimestampUtil.GetUnixTimestampMs();
+            trace.MarkCompleted(receiveTimestamp);
 
             // 5. Parse JSON response and measure PARSE time
             float parseStartTime = Time.realtimeSinceStartup;
@@ -456,6 +559,21 @@ namespace PassthroughCameraSamples.PoseEstimation
             {
                 response.processing_time_ms = procTime;
                 Debug.Log($"[POSE JSON] Processing time: {procTime:F1}ms");
+            }
+
+            // PHASE 6.1: Extract server timestamps for telemetry
+            string serverRecvStr = ExtractSimpleJsonValue(jsonResponse, "t_server_recv");
+            if (!string.IsNullOrEmpty(serverRecvStr) && double.TryParse(serverRecvStr, out double serverRecv))
+            {
+                response.t_server_recv = serverRecv;
+                Debug.Log($"[POSE JSON] Server receive timestamp: {serverRecv}");
+            }
+
+            string serverSendStr = ExtractSimpleJsonValue(jsonResponse, "t_server_send");
+            if (!string.IsNullOrEmpty(serverSendStr) && double.TryParse(serverSendStr, out double serverSend))
+            {
+                response.t_server_send = serverSend;
+                Debug.Log($"[POSE JSON] Server send timestamp: {serverSend}");
             }
 
             if (response == null || response.skeleton == null)
@@ -527,19 +645,27 @@ namespace PassthroughCameraSamples.PoseEstimation
                 Debug.LogWarning($"[POSE PARSE] skeleton.persons is NULL or empty!");
             }
 
-            // 6. Draw pose skeletons on UI
-            var cachedCameraPose = m_cameraAccess.GetCameraPose();
+            // PHASE 1: Update trace with detailed timing and response data
+            trace.server_proc_ms = response.processing_time_ms;
+            trace.server_receive_ts = (long)(response.t_server_recv * 1000);  // Convert to milliseconds
+            trace.server_send_ts = (long)(response.t_server_send * 1000);     // Convert to milliseconds
+            trace.upload_ms = uploadMs;
+            trace.download_ms = downloadMs;
+            trace.parse_ms = parseMs;
+            trace.download_bytes_uncompressed = downloadBytesUncompressed;
+            trace.download_bytes_compressed = downloadBytesCompressed;
+            trace.response = response;  // Cache the response
+            trace.detection_count = response.skeleton?.persons?.Count ?? 0;
 
-            if (response.skeleton != null && response.skeleton.persons != null && response.skeleton.persons.Count > 0)
-            {
-                Debug.Log($"[POSE SERVER] Received {response.skeleton.persons.Count} person(s) with pose data");
-                m_uiPose.DrawPoseSkeletons(response.skeleton.persons.ToArray(), cachedCameraPose, m_minKeypointScore);
-            }
-            else
-            {
-                Debug.Log("[POSE SERVER] No pose data in response");
-                m_uiPose.ClearSkeletons();
-            }
+            // PHASE 3: NO immediate display - deferred to Update() loop
+            // Display will happen in TryDisplayNewestFrame() which runs every Update()
+            // This allows us to implement "display only newest" logic
+            Debug.Log($"[FRAME TRACE] Frame {m_frameId} completed (state=Completed). Display deferred to Update(). {trace}");
+
+            // OLD Phase 1 code (REMOVED for Phase 3):
+            // m_uiPose.DrawPoseSkeletons(...)
+            // trace.MarkDisplayed(...)
+            // Now handled in TryDisplayNewestFrame()
 
             // 7. Update HUD with inference metrics
             // Compute average detection confidence
@@ -799,6 +925,258 @@ namespace PassthroughCameraSamples.PoseEstimation
             }
 
             return null;
+        }
+
+        // ============================================================================
+        // PHASE 3: DEFERRED DISPLAY LOGIC (Parallel Processing)
+        // ============================================================================
+
+        /// <summary>
+        /// Update() is called every frame - we use it to display the newest completed frame
+        /// This decouples response receipt from display, enabling "display only newest" logic
+        /// </summary>
+        private void Update()
+        {
+            // PRIORITY 3: Increment freeze counter BEFORE trying to display
+            m_framesSinceLastDisplay++;
+
+            TryDisplayNewestFrame();
+
+            // PHASE 6: Cleanup and optimization
+            CleanupOldFrames();
+            CheckFrameTimeouts();
+
+            // Log performance metrics periodically
+            if (Time.realtimeSinceStartup - m_lastMetricsLogTime > METRICS_LOG_INTERVAL)
+            {
+                Debug.Log($"[PERFORMANCE METRICS] {GetPerformanceMetrics()}");
+                m_lastMetricsLogTime = Time.realtimeSinceStartup;
+            }
+        }
+
+        /// <summary>
+        /// Find the newest completed frame and display it, marking older frames as dropped
+        /// </summary>
+        private void TryDisplayNewestFrame()
+        {
+            lock (m_frameTracesLock)
+            {
+                // Find all completed frames (responses received but not yet displayed/dropped)
+                var completedFrames = new List<FrameTrace>();
+                foreach (var trace in m_frameTraces.Values)
+                {
+                    if (trace.state == FrameState.Completed)
+                    {
+                        completedFrames.Add(trace);
+                    }
+                }
+
+                // If no completed frames, nothing to do
+                if (completedFrames.Count == 0)
+                {
+                    return;
+                }
+
+                // Sort by frame_id descending to get newest first
+                completedFrames.Sort((a, b) => b.frame_id.CompareTo(a.frame_id));
+
+                // Get the newest completed frame
+                FrameTrace newest = completedFrames[0];
+
+                long currentTimestamp = TimestampUtil.GetUnixTimestampMs();
+
+                // PRIORITY 1: Mark ALL older frames as dropped (including frames older than m_lastDisplayedFrameId)
+                // This handles out-of-order completion (e.g., Frame 4 arrives before Frame 1)
+                for (int i = 1; i < completedFrames.Count; i++)
+                {
+                    var olderFrame = completedFrames[i];
+                    olderFrame.MarkDropped(currentTimestamp, $"superseded_by_newer_{newest.frame_id}");
+                    m_droppedFrames++;
+
+                    // PRIORITY 1: Enqueue dropped frame instead of overwriting
+                    m_completedFramesQueue.Enqueue(olderFrame);
+                    Debug.Log($"[TELEMETRY QUEUE] Frame {olderFrame.frame_id} DROPPED → queued (queue depth: {m_completedFramesQueue.Count})");
+                }
+
+                // Check if newest frame is too old (arrived after a newer frame was already displayed)
+                if (newest.frame_id <= m_lastDisplayedFrameId)
+                {
+                    // This frame arrived late, mark as dropped
+                    newest.MarkDropped(currentTimestamp, $"arrived_after_newer_{m_lastDisplayedFrameId}");
+                    m_droppedFrames++;
+                    m_completedFramesQueue.Enqueue(newest);
+                    Debug.Log($"[TELEMETRY QUEUE] Frame {newest.frame_id} DROPPED (late arrival) → queued (queue depth: {m_completedFramesQueue.Count})");
+                    return;
+                }
+
+                // Display newest frame
+                DisplayFrame(newest);
+                newest.MarkDisplayed(currentTimestamp);
+                m_lastDisplayedFrameId = newest.frame_id;
+
+                // PRIORITY 3: Assign freeze count to displayed frame
+                newest.freeze_frames = m_framesSinceLastDisplay - 1;
+                m_framesSinceLastDisplay = 0;
+                Debug.Log($"[FREEZE METRICS] Frame {newest.frame_id} displayed after {newest.freeze_frames} Unity frames");
+
+                // PRIORITY 1: Enqueue displayed frame for telemetry
+                m_completedFramesQueue.Enqueue(newest);
+                Debug.Log($"[TELEMETRY QUEUE] Frame {newest.frame_id} DISPLAYED → queued (queue depth: {m_completedFramesQueue.Count})");
+
+                // LEGACY COMPATIBILITY: Also set m_lastCompletedTrace
+                m_lastCompletedTrace = newest;
+
+                Debug.Log($"[PARALLEL DISPLAY] Frame {newest.frame_id} DISPLAYED. Dropped {completedFrames.Count - 1} older frames. {newest}");
+            }
+        }
+
+        /// <summary>
+        /// Actually display a frame (render skeletons on UI)
+        /// </summary>
+        private void DisplayFrame(FrameTrace trace)
+        {
+            // Get cached camera pose
+            var cachedCameraPose = m_cameraAccess.GetCameraPose();
+
+            // Extract response from trace
+            PoseServerResponse response = trace.response as PoseServerResponse;
+            if (response == null)
+            {
+                Debug.LogError($"[PARALLEL DISPLAY] Frame {trace.frame_id} has no response data!");
+                m_uiPose.ClearSkeletons();
+                return;
+            }
+
+            // Draw pose skeletons
+            if (response.skeleton != null && response.skeleton.persons != null && response.skeleton.persons.Count > 0)
+            {
+                Debug.Log($"[PARALLEL DISPLAY] Displaying frame {trace.frame_id} with {response.skeleton.persons.Count} person(s)");
+                m_uiPose.DrawPoseSkeletons(response.skeleton.persons.ToArray(), cachedCameraPose, m_minKeypointScore);
+            }
+            else
+            {
+                Debug.Log($"[PARALLEL DISPLAY] Frame {trace.frame_id} has no pose data, clearing skeletons");
+                m_uiPose.ClearSkeletons();
+            }
+        }
+
+        // ============================================================================
+        // PHASE 6: CLEANUP AND OPTIMIZATION
+        // ============================================================================
+
+        /// <summary>
+        /// Remove old frames from memory to prevent unbounded growth
+        /// </summary>
+        private void CleanupOldFrames()
+        {
+            lock (m_frameTracesLock)
+            {
+                if (m_frameTraces.Count <= MAX_FRAME_TRACES)
+                {
+                    return;  // Within limit, no cleanup needed
+                }
+
+                // Find frames that are in final states (Displayed, Dropped, Failed)
+                var completedFrames = new List<int>();
+                foreach (var kvp in m_frameTraces)
+                {
+                    var state = kvp.Value.state;
+                    if (state == FrameState.Displayed || state == FrameState.Dropped || state == FrameState.Failed)
+                    {
+                        completedFrames.Add(kvp.Key);
+                    }
+                }
+
+                // Sort by frame_id and remove oldest
+                completedFrames.Sort();
+                int toRemove = m_frameTraces.Count - MAX_FRAME_TRACES;
+
+                for (int i = 0; i < Mathf.Min(toRemove, completedFrames.Count); i++)
+                {
+                    int frameId = completedFrames[i];
+                    m_frameTraces.Remove(frameId);
+                    Debug.Log($"[CLEANUP] Removed old frame {frameId} from trace dictionary");
+                }
+
+                if (toRemove > 0)
+                {
+                    Debug.Log($"[CLEANUP] Cleaned up {Mathf.Min(toRemove, completedFrames.Count)} old frames. Remaining: {m_frameTraces.Count}");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Check for frames that have been pending too long and mark them as failed
+        /// </summary>
+        private void CheckFrameTimeouts()
+        {
+            long currentTimeMs = TimestampUtil.GetUnixTimestampMs();
+
+            lock (m_frameTracesLock)
+            {
+                foreach (var trace in m_frameTraces.Values)
+                {
+                    // Only check pending frames
+                    if (trace.state != FrameState.Pending)
+                    {
+                        continue;
+                    }
+
+                    // Check if timeout exceeded
+                    long timeSinceSendMs = currentTimeMs - trace.unity_send_ts;
+                    float timeSinceSendSec = timeSinceSendMs / 1000f;
+                    if (timeSinceSendSec > FRAME_TIMEOUT_SECONDS)
+                    {
+                        trace.MarkFailed($"Timeout after {timeSinceSendSec:F1}s (limit: {FRAME_TIMEOUT_SECONDS}s)");
+                        Debug.LogWarning($"[TIMEOUT] Frame {trace.frame_id} timed out after {timeSinceSendSec:F1}s");
+
+                        // PRIORITY 1: Enqueue timeout failed frame for telemetry
+                        m_completedFramesQueue.Enqueue(trace);
+                        Debug.Log($"[TELEMETRY QUEUE] Frame {trace.frame_id} TIMEOUT → queued (queue depth: {m_completedFramesQueue.Count})");
+
+                        // Remove from pending requests if still there
+                        if (m_pendingRequests.ContainsKey(trace.frame_id))
+                        {
+                            var request = m_pendingRequests[trace.frame_id];
+                            request.Abort();  // Cancel the network request
+                            m_pendingRequests.Remove(trace.frame_id);
+                        }
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Get current performance metrics for debugging
+        /// </summary>
+        private string GetPerformanceMetrics()
+        {
+            lock (m_frameTracesLock)
+            {
+                int pendingCount = 0;
+                int completedCount = 0;
+                int displayedCount = 0;
+                int droppedCount = 0;
+                int failedCount = 0;
+
+                foreach (var trace in m_frameTraces.Values)
+                {
+                    switch (trace.state)
+                    {
+                        case FrameState.Pending: pendingCount++; break;
+                        case FrameState.Completed: completedCount++; break;
+                        case FrameState.Displayed: displayedCount++; break;
+                        case FrameState.Dropped: droppedCount++; break;
+                        case FrameState.Failed: failedCount++; break;
+                    }
+                }
+
+                int totalFrames = m_frameTraces.Count;
+                float dropRate = totalFrames > 0 ? (float)droppedCount / totalFrames * 100f : 0f;
+
+                return $"Traces={totalFrames} Pending={pendingCount} Completed={completedCount} " +
+                       $"Displayed={displayedCount} Dropped={droppedCount}({dropRate:F1}%) Failed={failedCount}";
+            }
         }
     }
 }

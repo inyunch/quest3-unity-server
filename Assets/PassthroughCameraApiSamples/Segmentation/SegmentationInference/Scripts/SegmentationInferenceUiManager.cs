@@ -456,6 +456,17 @@ namespace PassthroughCameraSamples.Segmentation
             // Don't pool - just let it be garbage collected since we're using point clouds
             // m_maskPool.Add(mask);
         }
+
+        // Clear all active masks (used when no response or error)
+        public void ClearAllMasks()
+        {
+            // Clear all drawn masks
+            for (int i = m_masksDrawn.Count - 1; i >= 0; i--)
+            {
+                ReturnMaskToPool(m_masksDrawn[i]);
+            }
+            m_masksDrawn.Clear();
+        }
     }
 }
 
