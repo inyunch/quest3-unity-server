@@ -99,6 +99,24 @@ namespace PassthroughCameraSamples.MultiObjectDetection
         private float m_lastMetricsLogTime = 0f;
         private const float METRICS_LOG_INTERVAL = 10.0f;
 
+        // UDP Transport (Phase 1 - Non-Blocking)
+        private System.Net.Sockets.UdpClient m_udpClient;
+        private const int UDP_PORT = 8002;
+        [SerializeField] private bool m_useUDPTransport = false;  // Feature flag for safe rollout
+
+        // Phase 3: Fixed cadence non-blocking send
+        private float m_nextInferenceTime = 0f;  // Next time to send inference request
+        private bool m_cameraReady = false;  // Camera initialization complete
+
+        // NEW: Improved Freeze/Drop Metrics Tracking
+        private float m_unityFrameTimeMs = 15.4f;  // Measured Unity frame time (default 65 FPS estimate)
+        private int m_sessionFrameIndex = 0;       // Sequential index for logged frames
+        private int m_cumulativeFreezeFrames = 0;  // Running total of freeze frames
+        private int m_cumulativeDropped = 0;       // Running total of dropped frames
+        private int m_cumulativeDisplayed = 0;     // Running total of displayed frames
+        private int m_lastLoggedFrameId = -1;      // Last frame_id that was logged
+        private int m_lastDisplayedFrameCount = -1; // Last Unity Time.frameCount when frame was displayed
+
         private void Awake()
         {
             var model = ModelLoader.Load(m_sentisModel);
@@ -112,6 +130,13 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             // PHASE 1: Generate unique session ID for this recording session
             m_sessionId = System.Guid.NewGuid().ToString();
             Debug.Log($"[SESSION] Started session: {m_sessionId}");
+
+            // Initialize UDP client if using UDP transport
+            if (m_useServerInference && m_useUDPTransport)
+            {
+                m_udpClient = new System.Net.Sockets.UdpClient();
+                Debug.Log($"[UDP] Initialized UDP client for port {UDP_PORT}");
+            }
 
             m_uiInference.SetLabels(m_labelsAsset);
 
@@ -145,14 +170,15 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 yield return TestServerConnection();
             }
 
-            while (true)
-            {
-                while (m_uiMenuManager.IsPaused)
-                {
-                    yield return null;
-                }
-                yield return RunInference();
-            }
+            // NEW: Measure actual Unity FPS on startup
+            StartCoroutine(MeasureUnityFPS());
+
+            // PHASE 3: Set camera ready flag and initialize timing
+            m_cameraReady = true;
+            m_nextInferenceTime = Time.time;
+
+            // PHASE 3: Removed while(true) loop - now driven by Update() at fixed cadence
+            Debug.Log("[PHASE 3 SENTIS] Start() complete - inference now driven by Update() at fixed cadence");
         }
 
         private void OnDestroy()
@@ -161,6 +187,33 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             m_engine.PeekOutput(1)?.CompleteAllPendingOperations();
             m_engine.PeekOutput(2)?.CompleteAllPendingOperations();
             m_engine.Dispose();
+
+            // Note: Excel logging is handled server-side via N+1 delayed telemetry
+            // No need to export CSV here
+        }
+
+        /// <summary>
+        /// Measure actual Unity FPS over 2 seconds to calculate frame time.
+        /// This is used for freeze_duration_ms calculation.
+        /// </summary>
+        private IEnumerator MeasureUnityFPS()
+        {
+            // Measure over 120 frames
+            int startFrame = Time.frameCount;
+            float startTime = Time.realtimeSinceStartup;
+
+            yield return new WaitForSeconds(2.0f);
+
+            int endFrame = Time.frameCount;
+            float endTime = Time.realtimeSinceStartup;
+
+            float frameCount = endFrame - startFrame;
+            float duration = endTime - startTime;
+            float fps = frameCount / duration;
+
+            m_unityFrameTimeMs = 1000.0f / fps;
+
+            Debug.Log($"[UNITY FPS] Measured {fps:F1} FPS over {duration:F1}s, frame time = {m_unityFrameTimeMs:F2}ms/frame");
         }
 
         internal static void PreloadModel(ModelAsset modelAsset)
@@ -252,10 +305,53 @@ namespace PassthroughCameraSamples.MultiObjectDetection
 
             if (m_useServerInference)
             {
-                // SERVER INFERENCE PATH
-                Debug.Log("[INFERENCE] Using SERVER inference");
-                yield return RunServerInference(targetTexture);
-                // m_detections is now populated by RunServerInference
+                if (m_useUDPTransport)
+                {
+                    // NEW: UDP NON-BLOCKING PATH
+                    Debug.Log("[DETECTION UDP] Using UDP transport");
+
+                    // Display completed frames BEFORE starting new inference
+                    TryDisplayNewestFrame();
+
+                    // 1. Encode JPEG
+                    byte[] jpegData = EncodeTextureToJPEG(targetTexture);
+                    if (jpegData == null)
+                    {
+                        Debug.LogError("[UDP] Failed to encode texture to JPEG");
+                        yield break;
+                    }
+
+                    // 2. Create frame trace with hash
+                    m_frameId++;
+                    FrameTrace trace = new FrameTrace(m_frameId);
+                    trace.session_id = m_sessionId;
+                    trace.payload_hash = UDPTransport.ComputeSHA256Base64(jpegData);
+                    trace.upload_bytes_compressed = jpegData.Length;
+                    trace.upload_bytes_uncompressed = targetTexture.width * targetTexture.height * 3;  // RGB24
+
+                    // Store trace
+                    lock (m_frameTracesLock)
+                    {
+                        m_frameTraces[trace.frame_id] = trace;
+                    }
+
+                    Debug.Log($"[UDP] Frame {trace.frame_id} created, hash={trace.payload_hash.Substring(0, 8)}...");
+
+                    // 3. Send UDP (returns immediately - no blocking!)
+                    SendFrameUDP(trace, jpegData);
+
+                    // 4. Start async response listener (runs in background)
+                    StartCoroutine(ListenForResponseHTTP(trace.frame_id));
+
+                    Debug.Log($"[UDP] Frame {trace.frame_id} sent, listener started");
+                }
+                else
+                {
+                    // OLD: HTTP BLOCKING PATH (fallback for safety)
+                    Debug.Log("[INFERENCE] Using SERVER inference with HTTP transport (blocking)");
+                    yield return RunServerInference(targetTexture);
+                    // m_detections is now populated by RunServerInference
+                }
             }
             else
             {
@@ -415,6 +511,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
         [System.Serializable]
         private class ServerResponse
         {
+            // OLD format - keep compatible with old renderer
             public DetectionResultData detections;
             public int model_input_width;
             public int model_input_height;
@@ -424,6 +521,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             public float server_queue_ms;
             public float server_postprocess_ms;
             public double t_server_recv;
+            public double server_process_start_ts;  // NEW: For queue_wait_ms calculation
             public double t_server_send;
         }
 
@@ -442,6 +540,62 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             public float confidence;
             public float[] bbox;           // normalized [0-1]
             public int[] bbox_pixels;      // absolute pixels
+        }
+
+        // ============================================================================
+        // PHASE 3: NON-BLOCKING INFERENCE (Fixed cadence send, async response)
+        // ============================================================================
+
+        /// <summary>
+        /// PHASE 3: Non-blocking inference runner called from Update() at fixed intervals.
+        /// Simplified version of RunInference() that only handles UDP path.
+        /// </summary>
+        private IEnumerator RunInferenceNonBlocking()
+        {
+            // Quick checks
+            if (!m_cameraAccess.IsPlaying)
+            {
+                Debug.Log("[PHASE 3 SENTIS] Camera not playing, skipping inference");
+                yield break;
+            }
+
+            // Get current frame texture
+            Texture targetTexture = m_cameraAccess.GetTexture();
+
+            // 1. Encode JPEG
+            byte[] jpegData = EncodeTextureToJPEG(targetTexture);
+            if (jpegData == null)
+            {
+                Debug.LogError("[PHASE 3 SENTIS] Failed to encode texture to JPEG");
+                yield break;
+            }
+
+            // 2. Create frame trace with hash
+            m_frameId++;
+            FrameTrace trace = new FrameTrace(m_frameId);
+            trace.session_id = m_sessionId;
+            trace.payload_hash = UDPTransport.ComputeSHA256Base64(jpegData);
+            trace.upload_bytes_compressed = jpegData.Length;
+            trace.upload_bytes_uncompressed = targetTexture.width * targetTexture.height * 3;
+
+            // Store trace
+            lock (m_frameTracesLock)
+            {
+                m_frameTraces[trace.frame_id] = trace;
+            }
+
+            Debug.Log($"[PHASE 3 SENTIS] Frame {trace.frame_id} created, size={jpegData.Length} bytes");
+
+            // 3. Send UDP (returns immediately - no blocking!)
+            SendFrameUDP(trace, jpegData);
+
+            // 4. Start async response listener (runs in background)
+            StartCoroutine(ListenForResponseHTTP(trace.frame_id));
+
+            Debug.Log($"[PHASE 3 SENTIS] Frame {trace.frame_id} sent via UDP");
+
+            // PHASE 3: NO yield return - method completes immediately
+            // Response will arrive asynchronously via ListenForResponseHTTP()
         }
 
         // ============================================================================
@@ -619,6 +773,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 request.SetRequestHeader("X-Prev-Unity-Display-Ts", traceToSend.unity_display_ts?.ToString() ?? "0");
                 request.SetRequestHeader("X-Prev-Unity-Drop-Ts", traceToSend.unity_drop_ts?.ToString() ?? "0");
                 request.SetRequestHeader("X-Prev-Server-Receive-Ts", traceToSend.server_receive_ts.ToString());
+                request.SetRequestHeader("X-Prev-Server-Process-Start-Ts", traceToSend.server_process_start_ts.ToString());  // NEW: For queue_wait_ms
                 request.SetRequestHeader("X-Prev-Server-Send-Ts", traceToSend.server_send_ts.ToString());
                 request.SetRequestHeader("X-Prev-Final-State", traceToSend.state.ToString());
                 request.SetRequestHeader("X-Prev-Drop-Reason", traceToSend.drop_reason ?? "");
@@ -669,7 +824,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
 
                 // PRIORITY 1: Enqueue failed frame for telemetry
                 m_completedFramesQueue.Enqueue(trace);
-                Debug.Log($"[TELEMETRY QUEUE] Frame {trace.frame_id} FAILED → queued (queue depth: {m_completedFramesQueue.Count})");
+                Debug.Log($"[TELEMETRY QUEUE] Frame {trace.frame_id} FAILED ??queued (queue depth: {m_completedFramesQueue.Count})");
 
                 yield break;
             }
@@ -736,7 +891,34 @@ namespace PassthroughCameraSamples.MultiObjectDetection
 
             // Parse server timestamps from response
             trace.server_receive_ts = (long)(response.t_server_recv * 1000);  // Convert to milliseconds
+            trace.server_process_start_ts = (long)(response.server_process_start_ts * 1000);  // NEW: For queue_wait_ms
             trace.server_send_ts = (long)(response.t_server_send * 1000);     // Convert to milliseconds
+
+            // Store latency breakdown (for Excel telemetry)
+            trace.upload_ms = uploadMs;
+            trace.download_ms = downloadMs;
+            trace.parse_ms = parseMs;
+
+            // Store payload sizes (for Excel telemetry)
+            trace.upload_bytes_uncompressed = uploadBytesUncompressed;
+            trace.upload_bytes_compressed = uploadBytesCompressed;
+            trace.download_bytes_uncompressed = downloadBytesUncompressed;
+            trace.download_bytes_compressed = downloadBytesCompressed;
+
+            // Extract detection metrics from response (for Excel telemetry)
+            int detectionCount = response.detections?.detections?.Length ?? 0;
+            float avgConfidence = 0f;
+            if (response.detections != null && response.detections.detections != null && response.detections.detections.Length > 0)
+            {
+                float sum = 0f;
+                foreach (var det in response.detections.detections)
+                {
+                    sum += det.confidence;
+                }
+                avgConfidence = sum / response.detections.detections.Length;
+            }
+            trace.detection_count = detectionCount;
+            trace.avg_confidence = avgConfidence;
 
             trace.MarkCompleted(receiveTimestamp);
 
@@ -761,6 +943,30 @@ namespace PassthroughCameraSamples.MultiObjectDetection
 
         private void Update()
         {
+            // PHASE 3: Fixed cadence inference triggering (UDP mode only)
+            if (m_useServerInference && m_useUDPTransport && m_cameraReady)
+            {
+                // Check if paused
+                if (m_uiMenuManager.IsPaused)
+                {
+                    return;  // Don't send inference requests while paused
+                }
+
+                // Check if it's time for next inference
+                float currentTime = Time.time;
+                if (currentTime >= m_nextInferenceTime)
+                {
+                    // Calculate next inference time BEFORE starting inference (fixed cadence)
+                    float targetInterval = m_inferenceConfig.GetInferenceInterval();
+                    m_nextInferenceTime = currentTime + targetInterval;
+
+                    // Start inference without blocking (fire and forget)
+                    StartCoroutine(RunInferenceNonBlocking());
+
+                    Debug.Log($"[PHASE 3 SENTIS] Triggered inference at fixed cadence (interval={targetInterval * 1000f:F0}ms)");
+                }
+            }
+
             if (m_useServerInference)
             {
                 // PRIORITY 3: Increment freeze counter BEFORE trying to display
@@ -809,7 +1015,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
 
                     // PRIORITY 1: Enqueue dropped frame instead of overwriting
                     m_completedFramesQueue.Enqueue(olderFrame);
-                    Debug.Log($"[TELEMETRY QUEUE] Frame {olderFrame.frame_id} DROPPED → queued (queue depth: {m_completedFramesQueue.Count})");
+                    Debug.Log($"[TELEMETRY QUEUE] Frame {olderFrame.frame_id} DROPPED ??queued (queue depth: {m_completedFramesQueue.Count})");
                 }
 
                 // Check if newest frame is too old (arrived after a newer frame was already displayed)
@@ -819,7 +1025,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                     newest.MarkDropped(currentTimestamp, $"arrived_after_newer_{m_lastDisplayedFrameId}");
                     m_droppedFrames++;
                     m_completedFramesQueue.Enqueue(newest);
-                    Debug.Log($"[TELEMETRY QUEUE] Frame {newest.frame_id} DROPPED (late arrival) → queued (queue depth: {m_completedFramesQueue.Count})");
+                    Debug.Log($"[TELEMETRY QUEUE] Frame {newest.frame_id} DROPPED (late arrival) ??queued (queue depth: {m_completedFramesQueue.Count})");
                     return;
                 }
 
@@ -828,15 +1034,59 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 newest.MarkDisplayed(currentTimestamp);
                 m_lastDisplayedFrameId = newest.frame_id;
 
-                // PRIORITY 3: Assign freeze count to displayed frame (how long we were frozen before this display)
-                // -1 because current frame doesn't count as freeze
-                newest.freeze_frames = m_framesSinceLastDisplay - 1;
-                m_framesSinceLastDisplay = 0;  // Reset counter
-                Debug.Log($"[FREEZE METRICS] Frame {newest.frame_id} displayed after {newest.freeze_frames} Unity frames");
+                // PRIORITY 3: Calculate improved freeze/drop metrics
+                int currentFrameCount = Time.frameCount;
+                if (m_lastDisplayedFrameCount >= 0)
+                {
+                    newest.freeze_frames = currentFrameCount - m_lastDisplayedFrameCount - 1;
+                }
+                else
+                {
+                    newest.freeze_frames = 0;  // First displayed frame
+                }
+                m_lastDisplayedFrameCount = currentFrameCount;
 
-                // PRIORITY 1: Enqueue displayed frame for telemetry
-                m_completedFramesQueue.Enqueue(newest);
-                Debug.Log($"[TELEMETRY QUEUE] Frame {newest.frame_id} DISPLAYED → queued (queue depth: {m_completedFramesQueue.Count})");
+                // NEW: Calculate improved freeze metrics
+                newest.freeze_duration_ms = newest.freeze_frames * m_unityFrameTimeMs;
+                m_cumulativeFreezeFrames += newest.freeze_frames;
+                newest.cumulative_freeze_frames = m_cumulativeFreezeFrames;
+                newest.freeze_ratio = newest.freeze_frames > 0
+                    ? (float)newest.freeze_frames / (newest.freeze_frames + 1)
+                    : 0f;
+
+                // NEW: Calculate drop metrics
+                if (m_lastLoggedFrameId >= 0)
+                {
+                    newest.frame_gap = newest.frame_id - m_lastLoggedFrameId - 1;
+                    if (newest.frame_gap > 0)
+                    {
+                        m_cumulativeDropped += newest.frame_gap;
+                    }
+                }
+                else
+                {
+                    newest.frame_gap = newest.frame_id;  // First frame
+                    m_cumulativeDropped += newest.frame_id;
+                }
+
+                m_cumulativeDisplayed++;
+                newest.cumulative_dropped = m_cumulativeDropped;
+                newest.cumulative_displayed = m_cumulativeDisplayed;
+
+                int totalFrames = m_cumulativeDropped + m_cumulativeDisplayed;
+                newest.drop_rate = totalFrames > 0 ? (float)m_cumulativeDropped / totalFrames : 0f;
+
+                // NEW: Session context
+                newest.session_frame_index = m_sessionFrameIndex++;
+                m_lastLoggedFrameId = newest.frame_id;
+
+                Debug.Log($"[FREEZE METRICS] Frame {newest.frame_id} displayed: " +
+                          $"freeze={newest.freeze_frames} ({newest.freeze_duration_ms:F1}ms), " +
+                          $"gap={newest.frame_gap}, drop_rate={newest.drop_rate:P1}, " +
+                          $"session_idx={newest.session_frame_index}");
+
+                // Frame marked as Displayed - telemetry will be sent with next frame (N+1 pattern)
+                Debug.Log($"[TELEMETRY] Frame {newest.frame_id} marked as DISPLAYED (telemetry ready for N+1 send)");
 
                 // LEGACY COMPATIBILITY: Also set m_lastCompletedTrace for backward compatibility
                 m_lastCompletedTrace = newest;
@@ -856,6 +1106,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             // Convert server detections to Unity format and update m_detections
             m_detections.Clear();
 
+            // OLD nested structure (restore compatibility)
             if (response.detections != null && response.detections.detections != null)
             {
                 // Calculate scale factors to convert from camera resolution to model input resolution
@@ -893,9 +1144,9 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             int downloadBytesUncompressed = m_lastDownloadBytes;
             float serverProcMs = trace.server_proc_ms;
 
-            // Compute average detection confidence
+            // Compute average detection confidence (OLD nested structure)
+            int detectionCount = response.detections?.detections?.Length ?? 0;
             float avgConfidence = 0f;
-            int detectionCount = 0;
             if (response.detections != null && response.detections.detections != null && response.detections.detections.Length > 0)
             {
                 float sum = 0f;
@@ -904,7 +1155,6 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                     sum += det.confidence;
                 }
                 avgConfidence = sum / response.detections.detections.Length;
-                detectionCount = response.detections.detections.Length;
             }
 
             // Update metrics in the main info panel (grey bottom panel)
@@ -1006,7 +1256,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
 
                         // PRIORITY 1: Enqueue timeout failed frame for telemetry
                         m_completedFramesQueue.Enqueue(trace);
-                        Debug.Log($"[TELEMETRY QUEUE] Frame {trace.frame_id} TIMEOUT → queued (queue depth: {m_completedFramesQueue.Count})");
+                        Debug.Log($"[TELEMETRY QUEUE] Frame {trace.frame_id} TIMEOUT ??queued (queue depth: {m_completedFramesQueue.Count})");
 
                         if (m_pendingRequests.ContainsKey(trace.frame_id))
                         {
@@ -1043,7 +1293,486 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                        $"Displayed={displayedCount} Dropped={droppedCount}({dropRate:F1}%) Failed={failedCount}";
             }
         }
+
+        // ============================================================================
+        // UDP TRANSPORT - Phase 1 Non-Blocking Implementation
+        // ============================================================================
+
+        /// <summary>
+        /// Send frame via UDP (non-blocking)
+        /// N+1 telemetry: Attach previous frame's final state (if ready and not yet sent)
+        /// </summary>
+        private void SendFrameUDP(FrameTrace trace, byte[] jpegData)
+        {
+            string serverUrl = m_inferenceConfig.BuildUrl();
+            System.Uri uri = new System.Uri(serverUrl);
+            string serverIP = uri.Host;
+
+            // N+1 delayed telemetry: Get telemetry for previous frame (currentFrameId - 1)
+            int prevFrameId = trace.frame_id - 1;
+            string prevTelemetryJson = null;
+
+            lock (m_frameTracesLock)
+            {
+                // Check if previous frame exists and is ready to send
+                if (prevFrameId > 0 && m_frameTraces.TryGetValue(prevFrameId, out var prevTrace))
+                {
+                    // Only send if:
+                    // 1. Frame has reached a FINAL state (Displayed/Dropped/Failed)
+                    // 2. Telemetry has NOT been sent yet
+                    bool isFinalState = (prevTrace.state == FrameState.Displayed ||
+                                        prevTrace.state == FrameState.Dropped ||
+                                        prevTrace.state == FrameState.Failed);
+
+                    if (isFinalState && !prevTrace.telemetry_sent)
+                    {
+                        // Build telemetry JSON for this specific frame
+                        prevTelemetryJson = BuildTelemetryJson(prevTrace);
+
+                        // Mark as sent to prevent re-sending
+                        prevTrace.telemetry_sent = true;
+
+                        Debug.Log($"[UNITY TELEMETRY] Sending trace for frame {prevTrace.frame_id}, " +
+                                  $"session={prevTrace.session_id}, " +
+                                  $"final_state={prevTrace.state}, " +
+                                  $"detection_count={prevTrace.detection_count ?? 0}");
+                    }
+                    else if (!isFinalState)
+                    {
+                        Debug.Log($"[UNITY TELEMETRY] Frame {prevFrameId} not final yet (state={prevTrace.state})");
+                    }
+                    else
+                    {
+                        Debug.Log($"[UNITY TELEMETRY] Frame {prevFrameId} telemetry already sent");
+                    }
+                }
+                else if (prevFrameId > 0)
+                {
+                    Debug.Log($"[UNITY TELEMETRY] Frame {prevFrameId} not found in traces dictionary");
+                }
+            }
+
+            // Store upload payload sizes (for Excel telemetry)
+            trace.upload_bytes_compressed = jpegData.Length;  // JPEG compressed size
+            // upload_bytes_uncompressed already set correctly before SendFrameUDP() was called
+
+            // Send UDP packet with attached telemetry (or null if not ready)
+            UDPTransport.SendFrame(m_udpClient, serverIP, UDP_PORT, trace, jpegData, prevTelemetryJson);
+
+            Debug.Log($"[UDP SEND] Frame {trace.frame_id} sent to {serverIP}:{UDP_PORT}, upload_bytes={jpegData.Length}");
+        }
+
+        /// <summary>
+        /// Poll HTTP response endpoint for inference result (async, non-blocking)
+        /// </summary>
+        private IEnumerator ListenForResponseHTTP(int expectedFrameId)
+        {
+            // Build response polling URL
+            string serverUrl = m_inferenceConfig.BuildUrl();
+            System.Uri uri = new System.Uri(serverUrl);
+            string responseUrl = $"http://{uri.Host}:{uri.Port}/response/{m_sessionId}/{expectedFrameId}";
+
+            float timeout = 5f;  // 5 second timeout
+            float elapsed = 0f;
+            float pollInterval = 0.1f;  // Poll every 100ms
+
+            // Get trace reference
+            FrameTrace trace = null;
+            lock (m_frameTracesLock)
+            {
+                if (!m_frameTraces.TryGetValue(expectedFrameId, out trace))
+                {
+                    Debug.LogWarning($"[UDP POLL] Frame {expectedFrameId} not found in traces!");
+                    yield break;
+                }
+            }
+
+            Debug.Log($"[UDP POLL] Starting polling for frame {expectedFrameId}");
+
+            // Poll until result available or timeout
+            while (elapsed < timeout)
+            {
+                using (UnityWebRequest request = UnityWebRequest.Get(responseUrl))
+                {
+                    yield return request.SendWebRequest();
+
+                    if (request.result == UnityWebRequest.Result.Success)
+                    {
+                        // Response received!
+                        long receiveTs = TimestampUtil.GetUnixTimestampMs();
+
+                        // Parse and process response (reuse existing logic)
+                        string jsonResponse = request.downloadHandler.text;
+                        ProcessServerResponse(trace, jsonResponse, receiveTs);
+
+                        Debug.Log($"[UDP POLL] Frame {expectedFrameId} received after {elapsed:F2}s");
+                        yield break;
+                    }
+                    else if (request.responseCode == 404)
+                    {
+                        // Not ready yet - this is expected, continue polling
+                        // (Server returns 404 while processing)
+                    }
+                    else
+                    {
+                        // Actual error (not just "not ready")
+                        Debug.LogError($"[UDP POLL] Error polling frame {expectedFrameId}: {request.error}");
+                        trace.MarkFailed($"Poll error: {request.error}");
+
+                        // Enqueue failed frame for telemetry
+                        lock (m_frameTracesLock)
+                        {
+                            m_completedFramesQueue.Enqueue(trace);
+                        }
+                        Debug.Log($"[TELEMETRY QUEUE] Frame {trace.frame_id} FAILED ??queued (queue depth: {m_completedFramesQueue.Count})");
+                        yield break;
+                    }
+                }
+
+                yield return new WaitForSeconds(pollInterval);
+                elapsed += pollInterval;
+            }
+
+            // Timeout - mark as failed
+            Debug.LogWarning($"[UDP POLL] Timeout waiting for frame {expectedFrameId} after {timeout}s");
+            trace.MarkFailed("Response timeout (5s)");
+
+            // Enqueue timeout failed frame for telemetry
+            lock (m_frameTracesLock)
+            {
+                m_completedFramesQueue.Enqueue(trace);
+            }
+            Debug.Log($"[TELEMETRY QUEUE] Frame {trace.frame_id} TIMEOUT ??queued (queue depth: {m_completedFramesQueue.Count})");
+        }
+
+        /// <summary>
+        /// Process server response JSON and update frame trace
+        /// (Extracted from old RunServerInference to be reusable by UDP polling)
+        /// </summary>
+        private void ProcessServerResponse(FrameTrace trace, string jsonResponse, long receiveTs)
+        {
+            // Parse JSON response
+            Debug.Log($"[UDP RESPONSE] Response: {jsonResponse.Substring(0, Mathf.Min(200, jsonResponse.Length))}...");
+
+            ServerResponse response = JsonUtility.FromJson<ServerResponse>(jsonResponse);
+
+            if (response == null)
+            {
+                Debug.LogError("[UDP RESPONSE] Failed to parse JSON response");
+                trace.MarkFailed("JSON parse error");
+
+                // Enqueue failed frame for telemetry
+                lock (m_frameTracesLock)
+                {
+                    m_completedFramesQueue.Enqueue(trace);
+                }
+                Debug.Log($"[TELEMETRY QUEUE] Frame {trace.frame_id} FAILED (parse error) ??queued (queue depth: {m_completedFramesQueue.Count})");
+                return;
+            }
+
+            // Manual parse server timestamps (JsonUtility limitation)
+            if (response.t_server_recv == 0 || response.t_server_send == 0)
+            {
+                string recvStr = ExtractSimpleJsonValue(jsonResponse, "t_server_recv");
+                if (!string.IsNullOrEmpty(recvStr) && double.TryParse(recvStr, out double recvVal))
+                {
+                    response.t_server_recv = recvVal;
+                    Debug.LogWarning($"[TELEMETRY FIX] Manually parsed t_server_recv: {recvVal}");
+                }
+
+                string sendStr = ExtractSimpleJsonValue(jsonResponse, "t_server_send");
+                if (!string.IsNullOrEmpty(sendStr) && double.TryParse(sendStr, out double sendVal))
+                {
+                    response.t_server_send = sendVal;
+                    Debug.LogWarning($"[TELEMETRY FIX] Manually parsed t_server_send: {sendVal}");
+                }
+            }
+
+            // Store server timestamps
+            trace.server_receive_ts = (long)(response.t_server_recv * 1000);
+            trace.server_process_start_ts = (long)(response.server_process_start_ts * 1000);
+            trace.server_send_ts = (long)(response.t_server_send * 1000);
+            trace.server_proc_ms = response.processing_time_ms;
+
+            // Calculate latency breakdown (METHOD B: Residual estimation)
+            // E2E latency (Unity-only, avoids clock skew)
+            float e2eMs = receiveTs - trace.unity_send_ts;
+
+            // Server-side metrics (from response, server-only timing)
+            float serverProcMs = response.processing_time_ms;
+            float queueWaitMs = (float)((response.server_process_start_ts - response.t_server_recv) * 1000);
+
+            // Network total time (residual: E2E - server_time)
+            float networkTotalMs = Mathf.Max(0f, e2eMs - serverProcMs - queueWaitMs);
+
+            // Split network time by compressed data size ratio (METHOD B)
+            int uploadBytesCompressed = trace.upload_bytes_compressed;
+            int downloadBytesUncompressed = System.Text.Encoding.UTF8.GetByteCount(jsonResponse);
+            int downloadBytesCompressed = downloadBytesUncompressed;  // No compression info in UDP polling
+
+            int totalBytes = uploadBytesCompressed + downloadBytesCompressed;
+            float uploadRatio = totalBytes > 0 ? (float)uploadBytesCompressed / totalBytes : 0.5f;
+
+            float uploadMs = networkTotalMs * uploadRatio;
+            float downloadMs = networkTotalMs * (1.0f - uploadRatio);
+            float parseMs = 0f;  // UDP polling doesn't track parse time separately
+
+            // Store latency breakdown
+            trace.e2e_ms = e2eMs;
+            trace.upload_ms = uploadMs;
+            trace.download_ms = downloadMs;
+            trace.parse_ms = parseMs;
+
+            Debug.Log($"[LATENCY METHOD B] Frame {trace.frame_id}: E2E={e2eMs:F1}ms, " +
+                      $"network_total={networkTotalMs:F1}ms (upload={uploadMs:F1}ms, download={downloadMs:F1}ms), " +
+                      $"server={serverProcMs:F1}ms, queue={queueWaitMs:F1}ms, " +
+                      $"upload_ratio={uploadRatio:F2} ({uploadBytesCompressed}/{totalBytes} bytes)");
+
+            // Store payload sizes (for Excel telemetry)
+            trace.download_bytes_uncompressed = downloadBytesUncompressed;
+            trace.download_bytes_compressed = downloadBytesCompressed;
+
+            // Extract detection metrics from response (for Excel telemetry)
+            int detectionCount = response.detections?.detections?.Length ?? 0;
+            float avgConfidence = 0f;
+            if (response.detections != null && response.detections.detections != null && response.detections.detections.Length > 0)
+            {
+                float sum = 0f;
+                foreach (var det in response.detections.detections)
+                {
+                    sum += det.confidence;
+                }
+                avgConfidence = sum / response.detections.detections.Length;
+            }
+            trace.detection_count = detectionCount;
+            trace.avg_confidence = avgConfidence;
+
+            // Store response
+            trace.response = response;
+
+            // Mark as completed (state updated in m_frameTraces dictionary)
+            trace.MarkCompleted(receiveTs);
+            Debug.Log($"[TELEMETRY] Frame {trace.frame_id} marked as COMPLETED (detection_count={detectionCount}, avg_conf={avgConfidence:F2})");
+
+            Debug.Log($"[UDP RESPONSE] Frame {trace.frame_id} processed successfully");
+        }
+
+        /// <summary>
+        /// Build telemetry JSON for a specific FrameTrace (N+1 delayed telemetry).
+        /// Matches the 34-column Excel schema expected by server.
+        /// NOTE: Should only be called when frame is in final state (Displayed/Dropped/Failed).
+        /// </summary>
+        private string BuildTelemetryJson(FrameTrace trace)
+        {
+            // Build telemetry JSON matching the 34-column Excel schema
+            // Server will extract these fields and write one row to InferenceLog
+            var json = "{" +
+                $"\"scene\":\"MultiObjectDetection\"," +
+                $"\"session_id\":\"{trace.session_id}\"," +
+                $"\"frame_id\":{trace.frame_id}," +
+                $"\"mode\":\"detection\"," +  // CRITICAL: Server reads this to determine inference type
+
+                // Unity-side timing (all Unix milliseconds)
+                $"\"unity_send_ts\":{trace.unity_send_ts}," +
+                $"\"unity_receive_ts\":{trace.unity_receive_ts}," +
+                $"\"unity_display_ts\":{trace.unity_display_ts ?? 0}," +
+                $"\"unity_drop_ts\":{trace.unity_drop_ts ?? 0}," +
+
+                // Server-side timing (from response, Unix milliseconds)
+                $"\"server_receive_ts\":{trace.server_receive_ts}," +
+                $"\"server_process_start_ts\":{trace.server_process_start_ts}," +
+                $"\"server_send_ts\":{trace.server_send_ts}," +
+
+                // Latency breakdown (milliseconds)
+                $"\"latency_ms\":{trace.e2e_ms:F2}," +
+                $"\"upload_ms\":{trace.upload_ms:F2}," +
+                $"\"queue_wait_ms\":{(trace.server_process_start_ts - trace.server_receive_ts):F2}," +
+                $"\"server_proc_ms\":{trace.server_proc_ms:F2}," +
+                $"\"download_ms\":{trace.download_ms:F2}," +
+                $"\"parse_ms\":{trace.parse_ms:F2}," +
+                $"\"udp_send_ms\":{trace.udp_send_ms:F2}," +
+
+                // NEW: Improved Freeze Metrics
+                $"\"freeze_duration_ms\":{trace.freeze_duration_ms:F2}," +
+                $"\"cumulative_freeze_frames\":{trace.cumulative_freeze_frames}," +
+                $"\"freeze_ratio\":{trace.freeze_ratio:F3}," +
+
+                // NEW: Improved Drop Metrics
+                $"\"frame_gap\":{trace.frame_gap}," +
+                $"\"cumulative_dropped\":{trace.cumulative_dropped}," +
+                $"\"cumulative_displayed\":{trace.cumulative_displayed}," +
+                $"\"drop_rate\":{trace.drop_rate:F3}," +
+
+                // NEW: Session Context
+                $"\"session_frame_index\":{trace.session_frame_index}," +
+
+                // Payload sizes (bytes)
+                $"\"upload_bytes_uncompressed\":{trace.upload_bytes_uncompressed}," +
+                $"\"upload_bytes_compressed\":{trace.upload_bytes_compressed}," +
+                $"\"download_bytes_uncompressed\":{trace.download_bytes_uncompressed}," +
+                $"\"download_bytes_compressed\":{trace.download_bytes_compressed}," +
+
+                // Final state and reasons
+                $"\"final_state\":\"{trace.state}\"," +
+                $"\"drop_reason\":\"{EscapeJson(trace.drop_reason ?? "")}\"," +
+                $"\"error_reason\":\"{EscapeJson(trace.error_reason ?? "")}\"," +
+
+                // Inference results (from response)
+                $"\"detection_count\":{trace.detection_count ?? 0}," +
+                $"\"avg_confidence\":{trace.avg_confidence:F4}," +
+
+                // Legacy/compatibility
+                $"\"freeze_frames_per_frame\":{trace.freeze_frames}," +
+                $"\"target_fps\":{m_inferenceConfig.targetFPS:F1}" +
+                "}";
+
+            return json;
+        }
+
+        /// <summary>
+        /// Escape string for JSON (handle quotes and backslashes)
+        /// </summary>
+        private string EscapeJson(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+                return "";
+
+            return value.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
+        }
+
+        /// <summary>
+        /// Encode texture to JPEG bytes (extracted from old RunServerInference)
+        /// </summary>
+        private byte[] EncodeTextureToJPEG(Texture texture)
+        {
+            // 1. Convert texture to Texture2D if needed
+            Texture2D tex2D = texture as Texture2D;
+            if (tex2D == null)
+            {
+                // Handle RenderTexture case
+                RenderTexture rt = texture as RenderTexture;
+                if (rt != null)
+                {
+                    tex2D = new Texture2D(rt.width, rt.height, TextureFormat.RGB24, false);
+                    RenderTexture.active = rt;
+                    tex2D.ReadPixels(new Rect(0, 0, rt.width, rt.height), 0, 0);
+                    tex2D.Apply();
+                    RenderTexture.active = null;
+                }
+                else
+                {
+                    Debug.LogError("Unsupported texture type for server inference");
+                    return null;
+                }
+            }
+
+            // 2. Downsample texture if configured (reduces upload size significantly)
+            Texture2D textureToEncode = tex2D;
+            int downsampleFactor = m_inferenceConfig.downsampleFactor;
+
+            if (downsampleFactor > 1)
+            {
+                int downsampledWidth = tex2D.width / downsampleFactor;
+                int downsampledHeight = tex2D.height / downsampleFactor;
+
+                // Create temporary RenderTexture for downsampling
+                RenderTexture rt = RenderTexture.GetTemporary(downsampledWidth, downsampledHeight, 0, RenderTextureFormat.ARGB32);
+                rt.filterMode = FilterMode.Bilinear;
+
+                // Blit original texture to downsampled RenderTexture
+                Graphics.Blit(tex2D, rt);
+
+                // Read back to Texture2D
+                RenderTexture previous = RenderTexture.active;
+                RenderTexture.active = rt;
+                Texture2D downsampledTex = new Texture2D(downsampledWidth, downsampledHeight, TextureFormat.RGB24, false);
+                downsampledTex.ReadPixels(new Rect(0, 0, downsampledWidth, downsampledHeight), 0, 0);
+                downsampledTex.Apply();
+                RenderTexture.active = previous;
+
+                // Release temporary RenderTexture
+                RenderTexture.ReleaseTemporary(rt);
+
+                textureToEncode = downsampledTex;
+                Debug.Log($"[DETECTION DOWNSAMPLE] {tex2D.width}x{tex2D.height} ??{downsampledWidth}x{downsampledHeight} (factor={downsampleFactor})");
+            }
+
+            // 3. Encode texture as JPEG
+            int jpegQuality = m_inferenceConfig.jpegQuality;
+            byte[] jpegBytes = textureToEncode.EncodeToJPG(jpegQuality);
+
+            // Clean up downsampled texture if created
+            if (downsampleFactor > 1 && textureToEncode != tex2D)
+            {
+                Destroy(textureToEncode);
+            }
+
+            return jpegBytes;
+        }
+
+        /// <summary>
+        /// Manually extract a simple JSON value from a JSON string.
+        /// Required because JsonUtility has limitations with certain field types.
+        /// </summary>
+        private string ExtractSimpleJsonValue(string json, string fieldName)
+        {
+            string searchPattern = $"\"{fieldName}\":";
+            int fieldStart = json.IndexOf(searchPattern);
+
+            if (fieldStart < 0)
+            {
+                return null;
+            }
+
+            // Skip past the field name and colon
+            int valueStart = fieldStart + searchPattern.Length;
+
+            // Skip whitespace
+            while (valueStart < json.Length && char.IsWhiteSpace(json[valueStart]))
+            {
+                valueStart++;
+            }
+
+            if (valueStart >= json.Length)
+            {
+                return null;
+            }
+
+            // Find end of value (comma, closing brace, or end of string)
+            int valueEnd = valueStart;
+            bool inString = json[valueStart] == '"';
+
+            if (inString)
+            {
+                // Skip opening quote
+                valueStart++;
+                valueEnd = valueStart;
+                // Find closing quote
+                while (valueEnd < json.Length && json[valueEnd] != '"')
+                {
+                    if (json[valueEnd] == '\\') valueEnd++; // Skip escaped characters
+                    valueEnd++;
+                }
+            }
+            else
+            {
+                // Find end of number
+                while (valueEnd < json.Length && json[valueEnd] != ',' && json[valueEnd] != '}' && json[valueEnd] != ']' && !char.IsWhiteSpace(json[valueEnd]))
+                {
+                    valueEnd++;
+                }
+            }
+
+            if (valueEnd > valueStart)
+            {
+                return json.Substring(valueStart, valueEnd - valueStart).Trim();
+            }
+
+            return null;
+        }
+
     }
 }
+
 
 
