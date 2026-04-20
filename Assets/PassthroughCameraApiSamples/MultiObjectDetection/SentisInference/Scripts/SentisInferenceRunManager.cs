@@ -37,7 +37,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
         [SerializeField] private InferenceConfig m_inferenceConfig = new InferenceConfig
         {
             mode = InferenceMode.ObjectDetection,
-            targetFPS = 10f,
+            targetFPS = 5f,  // Reduced from 10 to 5 for better completion rate
             jpegQuality = 80,
             includeMask = false,
             includeDepth = false
@@ -106,6 +106,10 @@ namespace PassthroughCameraSamples.MultiObjectDetection
 
         // Phase 3: Fixed cadence non-blocking send
         private float m_nextInferenceTime = 0f;  // Next time to send inference request
+
+        // LOCAL TELEMETRY: Direct CSV logging (bypasses N+1 delayed pattern for complete tracking)
+        private LocalTelemetryWriter m_localTelemetry;
+        [SerializeField] private bool m_enableLocalTelemetry = true;  // Feature flag
         private bool m_cameraReady = false;  // Camera initialization complete
 
         // NEW: Improved Freeze/Drop Metrics Tracking
@@ -130,6 +134,21 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             // PHASE 1: Generate unique session ID for this recording session
             m_sessionId = System.Guid.NewGuid().ToString();
             Debug.Log($"[SESSION] Started session: {m_sessionId}");
+
+            // Initialize local telemetry writer if enabled
+            if (m_enableLocalTelemetry)
+            {
+                m_localTelemetry = new LocalTelemetryWriter();
+                if (m_localTelemetry.Initialize(m_sessionId))
+                {
+                    Debug.Log($"[LOCAL TELEMETRY] Initialized: {m_localTelemetry.GetFilePath()}");
+                }
+                else
+                {
+                    Debug.LogWarning("[LOCAL TELEMETRY] Failed to initialize, telemetry will be limited");
+                    m_localTelemetry = null;
+                }
+            }
 
             // Initialize UDP client if using UDP transport
             if (m_useServerInference && m_useUDPTransport)
@@ -187,6 +206,13 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             m_engine.PeekOutput(1)?.CompleteAllPendingOperations();
             m_engine.PeekOutput(2)?.CompleteAllPendingOperations();
             m_engine.Dispose();
+
+            // Close local telemetry writer
+            if (m_localTelemetry != null)
+            {
+                m_localTelemetry.Close();
+                Debug.Log($"[LOCAL TELEMETRY] Session ended, {m_localTelemetry.GetRowCount()} rows written");
+            }
 
             // Note: Excel logging is handled server-side via N+1 delayed telemetry
             // No need to export CSV here
@@ -1013,6 +1039,9 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                     olderFrame.MarkDropped(currentTimestamp, $"superseded_by_newer_{newest.frame_id}");
                     m_droppedFrames++;
 
+                    // Write to local telemetry IMMEDIATELY
+                    WriteLocalTelemetry(olderFrame);
+
                     // PRIORITY 1: Enqueue dropped frame instead of overwriting
                     m_completedFramesQueue.Enqueue(olderFrame);
                     Debug.Log($"[TELEMETRY QUEUE] Frame {olderFrame.frame_id} DROPPED ??queued (queue depth: {m_completedFramesQueue.Count})");
@@ -1024,6 +1053,10 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                     // This frame arrived late, mark as dropped
                     newest.MarkDropped(currentTimestamp, $"arrived_after_newer_{m_lastDisplayedFrameId}");
                     m_droppedFrames++;
+
+                    // Write to local telemetry IMMEDIATELY
+                    WriteLocalTelemetry(newest);
+
                     m_completedFramesQueue.Enqueue(newest);
                     Debug.Log($"[TELEMETRY QUEUE] Frame {newest.frame_id} DROPPED (late arrival) ??queued (queue depth: {m_completedFramesQueue.Count})");
                     return;
@@ -1084,6 +1117,9 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                           $"freeze={newest.freeze_frames} ({newest.freeze_duration_ms:F1}ms), " +
                           $"gap={newest.frame_gap}, drop_rate={newest.drop_rate:P1}, " +
                           $"session_idx={newest.session_frame_index}");
+
+                // Write to local telemetry IMMEDIATELY (bypasses N+1 delay)
+                WriteLocalTelemetry(newest);
 
                 // Frame marked as Displayed - telemetry will be sent with next frame (N+1 pattern)
                 Debug.Log($"[TELEMETRY] Frame {newest.frame_id} marked as DISPLAYED (telemetry ready for N+1 send)");
@@ -1253,6 +1289,9 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                     if (timeSinceSendSec > FRAME_TIMEOUT_SECONDS)
                     {
                         trace.MarkFailed($"Timeout after {timeSinceSendSec:F1}s");
+
+                        // Write to local telemetry IMMEDIATELY
+                        WriteLocalTelemetry(trace);
 
                         // PRIORITY 1: Enqueue timeout failed frame for telemetry
                         m_completedFramesQueue.Enqueue(trace);
@@ -1638,6 +1677,25 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 return "";
 
             return value.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
+        }
+
+        /// <summary>
+        /// Write frame trace to local CSV telemetry (immediate logging, bypasses N+1 delay)
+        /// Call this whenever a frame reaches a FINAL state (Displayed/Dropped/Failed)
+        /// </summary>
+        private void WriteLocalTelemetry(FrameTrace trace)
+        {
+            if (m_localTelemetry != null)
+            {
+                try
+                {
+                    m_localTelemetry.WriteFrameTrace(trace, "MultiObjectDetection");
+                }
+                catch (System.Exception ex)
+                {
+                    Debug.LogError($"[LOCAL TELEMETRY] Failed to write frame {trace.frame_id}: {ex.Message}");
+                }
+            }
         }
 
         /// <summary>

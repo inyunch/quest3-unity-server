@@ -2382,7 +2382,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 2681575481727882275, guid: c9740e6c6f47fd442b765d80a969c45b, type: 3}
       propertyPath: m_jpegQuality
-      value: 80
+      value: 60
       objectReference: {fileID: 0}
     - target: {fileID: 2681575481727882275, guid: c9740e6c6f47fd442b765d80a969c45b, type: 3}
       propertyPath: m_cameraAccess
@@ -2397,6 +2397,10 @@ PrefabInstance:
       value: 
       objectReference: {fileID: 0}
     - target: {fileID: 2681575481727882275, guid: c9740e6c6f47fd442b765d80a969c45b, type: 3}
+      propertyPath: m_useUDPTransport
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 2681575481727882275, guid: c9740e6c6f47fd442b765d80a969c45b, type: 3}
       propertyPath: m_useServerInference
       value: 1
       objectReference: {fileID: 0}
@@ -2405,12 +2409,16 @@ PrefabInstance:
       value: 
       objectReference: {fileID: 1542092273}
     - target: {fileID: 2681575481727882275, guid: c9740e6c6f47fd442b765d80a969c45b, type: 3}
+      propertyPath: m_inferenceConfig.targetFPS
+      value: 5
+      objectReference: {fileID: 0}
+    - target: {fileID: 2681575481727882275, guid: c9740e6c6f47fd442b765d80a969c45b, type: 3}
       propertyPath: m_inferenceConfig.jpegQuality
-      value: 80
+      value: 60
       objectReference: {fileID: 0}
     - target: {fileID: 2681575481727882275, guid: c9740e6c6f47fd442b765d80a969c45b, type: 3}
       propertyPath: m_inferenceConfig.downsampleFactor
-      value: 1
+      value: 2
       objectReference: {fileID: 0}
     - target: {fileID: 5228241647023865434, guid: c9740e6c6f47fd442b765d80a969c45b, type: 3}
       propertyPath: m_Name

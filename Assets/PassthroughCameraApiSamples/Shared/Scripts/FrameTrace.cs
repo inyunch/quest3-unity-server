@@ -24,21 +24,41 @@ namespace PassthroughCameraSamples.Shared
         public long? unity_drop_ts;      // OPTIONAL - when dropped (null if not dropped)
 
         // === Server Timestamps (Unix milliseconds since epoch) ===
-        public long server_receive_ts;   // CONDITIONAL - from response (0 if request didn't reach server)
-        public long server_send_ts;      // CONDITIONAL - from response (0 if server didn't respond)
+        public long server_receive_ts;         // CONDITIONAL - from response (0 if request didn't reach server)
+        public long server_process_start_ts;   // CONDITIONAL - from response (0 if never started processing) - NEW for queue_wait_ms
+        public long server_send_ts;            // CONDITIONAL - from response (0 if server didn't respond)
+
+        // === Payload Integrity (for UDP transport) ===
+        public string payload_hash;            // SHA256 hash of JPEG payload (Base64-encoded) - for UDP frame verification
 
         // === Derived Timing (calculated) ===
         public float e2e_ms;             // REQUIRED - unity_receive_ts - unity_send_ts
         public float server_proc_ms;     // OPTIONAL - from response.processing_time_ms
-        public float upload_ms;          // OPTIONAL - estimated
-        public float download_ms;        // OPTIONAL - estimated
+        public float upload_ms;          // OPTIONAL - estimated (residual method)
+        public float download_ms;        // OPTIONAL - estimated (residual method)
         public float parse_ms;           // OPTIONAL - measured in Unity
+        public float udp_send_ms;        // OPTIONAL - actual UDP send() call time (Method A verification)
 
         // === State Tracking ===
         public FrameState state;         // REQUIRED - current lifecycle state
         public string drop_reason;       // OPTIONAL - why dropped (if Dropped)
         public string error_reason;      // OPTIONAL - error message (if Failed)
         public int freeze_frames;        // PRIORITY 3 - Unity frames between this display and previous display
+        public bool telemetry_sent;      // N+1 telemetry: true if this frame's telemetry has been sent to server
+
+        // === NEW: Improved Freeze Metrics ===
+        public float freeze_duration_ms;      // Freeze time in milliseconds (freeze_frames × unity_frame_time)
+        public int cumulative_freeze_frames;  // Running total of freeze frames since session start
+        public float freeze_ratio;            // Ratio: freeze_frames / (freeze_frames + 1)
+
+        // === NEW: Improved Drop Metrics ===
+        public int frame_gap;                 // Gap from previous logged frame: frame_id - prev_frame_id - 1
+        public int cumulative_dropped;        // Running total of dropped frames since session start
+        public int cumulative_displayed;      // Running total of displayed frames since session start
+        public float drop_rate;               // Drop rate: cumulative_dropped / (cumulative_dropped + cumulative_displayed)
+
+        // === NEW: Session Context ===
+        public int session_frame_index;       // Sequential index of this logged frame (0, 1, 2, ...)
 
         // === Payload Size Tracking ===
         public int upload_bytes_uncompressed;  // Original RGB24 size
@@ -95,6 +115,7 @@ namespace PassthroughCameraSamples.Shared
         public void MarkDropped(long dropTime, string reason)
         {
             unity_drop_ts = dropTime;
+            unity_display_ts = null;  // Clear stale display timestamp when marking as dropped
             drop_reason = reason;
             state = FrameState.Dropped;
         }

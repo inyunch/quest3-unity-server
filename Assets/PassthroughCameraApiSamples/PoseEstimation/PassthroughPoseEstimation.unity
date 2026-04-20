@@ -2174,6 +2174,7 @@ MonoBehaviour:
   m_minKeypointScore: 0.3
   m_serverUrl: 
   m_jpegQuality: 60
+  m_useUDPTransport: 1
 --- !u!224 &8587535026074093613 stripped
 RectTransform:
   m_CorrespondingSourceObject: {fileID: 8722207748505512711, guid: 259c0c899b7e0c14aa431eefdc0aacc6, type: 3}

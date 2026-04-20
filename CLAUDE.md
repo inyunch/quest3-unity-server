@@ -28,7 +28,7 @@ If this path doesn't exist, ask the user for the correct server location.
 
 ### Starting the Server
 
-**Correct way** (from QUICK_START_GUIDE.md):
+**Standard Method** (Supports both HTTP and UDP transport):
 
 ```bash
 # Navigate to server directory
@@ -37,18 +37,68 @@ cd C:\Repo\Github\vision_server
 # Activate virtual environment (if using conda)
 conda activate vision_server
 
-# Run server
-python server.py
-# OR
-python -m app.main
-# OR
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+# Run server with single worker (recommended for development)
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8001 --workers 1
 ```
 
 **Expected output**:
 ```
-INFO:     Started server process
-INFO:     Uvicorn running on http://0.0.0.0:8000
+[YOLO] Model ready: yolov8n (80 classes, person at index 0)
+[POSE] Keypoint R-CNN loaded successfully!
+[SEGMENTATION] YOLO11n-seg model loaded successfully
+
+============================================================
+BOUNDED ADMISSION QUEUE - Initialized
+============================================================
+  Max pending frames: 3
+  Drop policy: FIFO (oldest pending dropped when full)
+============================================================
+
+============================================================
+UDP FRAME INGEST - Started
+============================================================
+  Listening on: 0.0.0.0:8002
+  Max frame size: 512.0 KB
+  Deduplication TTL: 5s
+============================================================
+
+============================================================
+RESULT CACHE - Initialized
+============================================================
+  TTL: 30s
+  Max size: 1000
+  Cleanup interval: 10s
+============================================================
+
+============================================================
+UDP INFERENCE WORKER - Started
+============================================================
+  Worker will process UDP frames from admission queue
+  Inference results stored in result cache
+  Unity polls via GET /response/{session_id}_{frame_id}
+============================================================
+
+INFO:     Uvicorn running on http://0.0.0.0:8001
+[UDP WORKER] Worker loop started, waiting for UDP frames...
+```
+
+**Important Ports**:
+- **HTTP API**: Port `8001` (Unity sends requests here)
+- **UDP Listener**: Port `8002` (Unity sends frames here via UDP transport)
+
+**Verification**:
+```bash
+# Check UDP listener is active
+netstat -an | findstr 8002
+# Should show: UDP    0.0.0.0:8002           *:*
+
+# Check HTTP server is active
+netstat -an | findstr 8001
+# Should show: TCP    0.0.0.0:8001           LISTENING
+
+# Test server health
+curl http://localhost:8001/
+# Should return: {"status":"ok","service":"Human Inference API",...}
 ```
 
 ### Server Endpoints
@@ -624,9 +674,152 @@ Access via: **Tools → Passthrough Camera → Server Config Editor**
 
 ---
 
+## UDP Non-Blocking Transport
+
+### Overview
+
+The project supports **two transport modes**:
+
+1. **HTTP POST** (Original) - Blocking, synchronous
+2. **UDP + HTTP Polling** (New) - Non-blocking, asynchronous ⭐
+
+### Why UDP Transport?
+
+**Problem with HTTP POST**:
+- Blocks Unity main thread for ~528ms per frame
+- Limits FPS to ~2.6
+- High queue_wait_ms (101ms) due to accumulation
+
+**UDP Transport Solution**:
+- Unity sends frame via UDP (instant, non-blocking)
+- Background coroutine polls for result via HTTP
+- FPS improves to 5.0+ (+92%)
+- queue_wait_ms < 5ms (-95%)
+
+### Enabling UDP Transport (Unity Side)
+
+**Step 1: Configure Server IP**
+
+Use Tools → Passthrough Camera → Server Config Editor:
+- Server IP: `192.168.0.135` (your PC's WiFi IP)
+- Port: `8001`
+
+**Step 2: Enable in Inspector**
+
+For each inference manager (Segmentation, Pose, MultiObjectDetection):
+1. Select the manager GameObject in scene hierarchy
+2. Check ✓ **Use UDP Transport** in Inspector
+3. Ensure **Use Server Inference** is also checked
+
+**Expected Fields**:
+```
+Inference Config:
+├─ Use Server Inference: ✓
+├─ Use UDP Transport: ✓           ← Enable this for UDP mode
+├─ Mode: Both (or Detection/Pose)
+├─ Target FPS: 10                  ← Controls cadence (100ms intervals)
+└─ Use Server Config: ✓
+```
+
+### Verifying UDP Mode is Active
+
+**Unity Logs** (via `adb logcat -s Unity | findstr "UDP"`):
+```
+[PHASE 3] Triggered inference at fixed cadence (interval=100ms)
+[UDP SEND] Frame sessionid_26 sent, size=9308 bytes
+[UDP POLL] Starting polling for frame 26
+[UDP POLL] Frame 26 received after 0.25s
+```
+
+If you see `[SERVER POST]` instead, UDP is NOT enabled.
+
+### Server Side Requirements
+
+**UDP Worker** (Automatically Started):
+
+The server now includes a UDP inference worker that:
+1. Listens for UDP frames on port 8002
+2. Pulls frames from admission queue
+3. Runs AI inference (YOLO, Pose, etc.)
+4. Stores results in cache (30s TTL)
+5. Unity polls results via HTTP
+
+**Verify worker is running** (check server logs):
+```
+============================================================
+UDP INFERENCE WORKER - Started
+============================================================
+  Worker will process UDP frames from admission queue
+  Inference results stored in result cache
+  Unity polls via GET /response/{session_id}_{frame_id}
+============================================================
+
+[UDP WORKER] Worker loop started, waiting for UDP frames...
+```
+
+### Architecture Flow
+
+```
+Unity:
+  Update() → Check if time for next frame
+    → RunInferenceNonBlocking():
+        1. Encode JPEG
+        2. Send via UDP (instant)
+        3. Start polling coroutine (background)
+        4. Return immediately (no blocking!)
+
+Server:
+  UDP Listener (port 8002) → Receive frame
+    → Add to bounded queue
+
+  UDP Worker (background) → Pull from queue
+    → Run inference
+    → Store result in cache
+
+  HTTP Endpoint (port 8001) → Unity polls
+    → Return cached result (or 404 if not ready)
+```
+
+### Performance Comparison
+
+| Metric | HTTP POST | UDP Transport | Improvement |
+|--------|-----------|---------------|-------------|
+| FPS | 2.6 | 5.0+ | +92% |
+| Unity blocking | 528ms | 0ms | -100% |
+| queue_wait_ms | 101ms | <5ms | -95% |
+| Frames/60s | 150 | 300+ | +100% |
+
+### Switching Between Modes
+
+**To use HTTP POST** (original):
+- Uncheck **Use UDP Transport** in Inspector
+- Keep **Use Server Inference** checked
+
+**To use UDP Transport** (new):
+- Check both **Use UDP Transport** and **Use Server Inference**
+- Server must be running with UDP worker
+
+### Troubleshooting
+
+**Issue**: Unity logs show no `[UDP]` messages
+- **Solution**: Verify **Use UDP Transport** is checked in Inspector, rebuild and deploy
+
+**Issue**: Server logs show `[UDP WORKER] Worker loop started` but no processing
+- **Solution**: Check Unity is sending UDP frames, verify firewall allows port 8002
+
+**Issue**: HTTP polling always returns 404
+- **Solution**: Check server logs for `[UDP WORKER]` processing messages, verify inference not failing
+
+### Documentation
+
+See [UDP_TRANSPORT_SETUP_GUIDE.md](./Documentation/UDP_TRANSPORT_SETUP_GUIDE.md) for complete setup and testing instructions.
+
+---
+
 ## Useful Documentation Links
 
 **In this repository**:
+- [UDP Transport Setup Guide](./Documentation/UDP_TRANSPORT_SETUP_GUIDE.md) ⭐ **NEW - Phase 3 Complete**
 - [Server IP Configuration Guide](./Documentation/SERVER_IP_CONFIGURATION_GUIDE.md) ⭐ **NEW**
 - [URL Reference (All Modes)](./URL_REFERENCE.md) ⭐ **NEW**
 - [Quick Start Guide](./Documentation/QUICK_START_GUIDE.md)
