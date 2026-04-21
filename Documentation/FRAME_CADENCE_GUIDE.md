@@ -28,6 +28,35 @@ public float targetFPS = 10f;  // ← Controls frame frequency
 
 ---
 
+## Current Production Configuration
+
+**All scenes currently configured with targetFPS = 5.0** (200ms interval):
+
+| Scene | Mode | targetFPS | Interval | JPEG Quality | Downsample |
+|-------|------|-----------|----------|--------------|------------|
+| **Segmentation** | Segmentation (4) | **5.0** | 200ms | 60 | 2× |
+| **PoseEstimation** | Both (2) | **5.0** | 200ms | 60 | 2× |
+| **MultiObjectDetection** | ObjectDetection (0) | **5.0** | 200ms | 60 | 2× |
+
+**Configuration Details**:
+- **GameObject Path**: `SentisInferenceManagerPrefab` (all scenes)
+- **Components**:
+  - Segmentation: `SegmentationInferenceRunManager`
+  - PoseEstimation: `PoseInferenceRunManager`
+  - MultiObjectDetection: `SentisInferenceRunManager`
+- **UDP Transport**: Enabled (`m_useUDPTransport = true`)
+- **Server Inference**: Enabled (`m_useServerInference = true`)
+
+**Why 5 FPS (200ms)?**
+- Conservative setting balancing performance and responsiveness
+- Reduces server load, network bandwidth, and Quest battery usage
+- 200ms interval aligns well with V3.0 latency targets (200-350ms E2E)
+- All modes share same configuration for consistency
+
+**To Change**: See [How to Configure targetFPS](#how-to-configure-targetfps) section below.
+
+---
+
 ## How It Works (V3.0 Fixed Cadence System)
 
 ### 1. Configuration (Inspector)
@@ -340,13 +369,14 @@ void Update()
 
 ### targetFPS Selection Guide
 
-| Mode | Recommended FPS | Interval | Reason |
-|------|-----------------|----------|--------|
-| **Multi-Object Detection** | 10-15 FPS | 66-100ms | Fast inference (~220ms), can handle higher rate |
-| **Pose Estimation** | 5-8 FPS | 125-200ms | Medium inference (~290ms), moderate rate |
-| **Both (Detection + Pose)** | 5 FPS | 200ms | Slower inference (~320ms), lower rate safer |
-| **Segmentation** | 8-10 FPS | 100-125ms | Fast inference (~250ms), good balance |
-| **Depth Estimation** | 3-5 FPS | 200-333ms | Slow inference (~350ms), large download |
+| Mode | Current Production | Recommended Range | Interval | Reason |
+|------|-------------------|-------------------|----------|--------|
+| **Multi-Object Detection** | **5.0 FPS** | 10-15 FPS | 66-200ms | Fast inference (~220ms), can handle higher rate |
+| **Pose Estimation (Both)** | **5.0 FPS** | 5-8 FPS | 125-200ms | Medium inference (~290ms), moderate rate |
+| **Segmentation** | **5.0 FPS** | 8-10 FPS | 100-200ms | Fast inference (~250ms), good balance |
+| **Depth Estimation** | N/A | 3-5 FPS | 200-333ms | Slow inference (~350ms), large download |
+
+**Note**: Current production uses **5 FPS across all modes** for consistency and battery optimization.
 
 **Rule of Thumb**:
 ```
@@ -381,7 +411,8 @@ Example:
 - ❌ May miss fast-moving objects
 - ❌ Stuttery tracking
 
-**Recommended Starting Point**: **10 FPS** for most use cases
+**Current Production Setting**: **5 FPS** (balances responsiveness and battery life)
+**Recommended Starting Point**: **5-10 FPS** for most use cases (adjust based on latency and battery requirements)
 
 ---
 
@@ -657,13 +688,16 @@ void Update()
 - ✅ Independent of camera FPS - can send at lower rate than capture
 - ✅ Configurable per scene - different modes can use different FPS
 
-**Recommended values**:
+**Current production configuration** (all scenes):
+- **All modes**: **5.0 FPS** (200ms interval, JPEG quality 60, downsample 2×)
+
+**Recommended ranges**:
 - **Detection**: 10-15 FPS (fast inference)
 - **Pose**: 5-8 FPS (medium inference)
 - **Segmentation**: 8-10 FPS (fast inference)
 - **Both/Depth**: 3-5 FPS (slow inference)
 
-**Start with 10 FPS and adjust based on**:
+**Start with 5 FPS (current production) and adjust based on**:
 - Server latency (reduce if >400ms)
 - Network bandwidth (reduce if congested)
 - Battery life (reduce for longer runtime)
