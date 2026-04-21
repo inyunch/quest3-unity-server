@@ -1042,41 +1042,64 @@ namespace PassthroughCameraSamples.Segmentation
 
         /// <summary>
         /// V3.0: Display segmentation frame using FrameResponse.
-        /// Replaces old DisplayFrame() that used ServerResponse.
+        /// Uses detections array with per-detection PNG masks (mask_png_base64).
         /// </summary>
         private void DisplayV3Frame(FrameResponse response)
         {
-            // Check if response has segmentation data
-            if (!response.HasSegmentation())
+            // Check if response has detection data (segmentation uses detections format)
+            if (!response.HasDetections())
             {
                 m_uiInference.ClearAllMasks();
-                Debug.LogWarning($"[V3 SEGMENTATION] Frame {response.frame_id} has no segmentation data");
+                Debug.LogWarning($"[V3 SEGMENTATION] Frame {response.frame_id} has no detection data");
                 return;
             }
 
-            var segmentation = response.segmentation;
-
-            // Convert segmentation to Unity detections format
-            m_detections.Clear();
-
-            if (segmentation.class_ids != null && segmentation.class_ids.Length > 0)
-            {
-                Debug.Log($"[V3 SEGMENTATION] Frame {response.frame_id}: {segmentation.num_detections} detections");
-
-                // Note: Segmentation uses mask data, not bounding boxes
-                // The mask is already in segmentation.mask (byte array)
-                // For now, just clear detections and render mask directly
-            }
+            // Clear previous masks
+            m_uiInference.ClearAllMasks();
 
             // Get camera pose for rendering
             var cachedCameraPose = m_cameraAccess.GetCameraPose();
 
+            // Render each detection's mask
+            int maskIndex = 0;
+            int masksRendered = 0;
+
+            foreach (var det in response.detections)
+            {
+                if (!string.IsNullOrEmpty(det.mask_png_base64))
+                {
+                    try
+                    {
+                        // Decode base64 PNG to bytes
+                        byte[] maskBytes = System.Convert.FromBase64String(det.mask_png_base64);
+
+                        // Create texture from PNG with RGBA support for alpha channel
+                        Texture2D maskTexture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+
+                        if (maskTexture.LoadImage(maskBytes))
+                        {
+                            // Pass mask to UI manager for rendering
+                            m_uiInference.RenderMask(maskIndex, maskTexture, det.bbox_pixels, cachedCameraPose);
+                            masksRendered++;
+                        }
+                        else
+                        {
+                            Debug.LogError($"[V3 SEGMENTATION] Failed to LoadImage for detection {maskIndex}");
+                        }
+                    }
+                    catch (System.Exception e)
+                    {
+                        Debug.LogError($"[V3 SEGMENTATION] Error decoding mask {maskIndex}: {e.Message}");
+                    }
+
+                    maskIndex++;
+                }
+            }
+
+            Debug.Log($"[V3 SEGMENTATION] Frame {response.frame_id}: Rendered {masksRendered} masks out of {response.detections.Length} detections");
+
             // Update UI with metrics
             UpdateUIMetrics(response);
-
-            // Note: Actual mask rendering would go here if segmentation.mask is populated
-            // For now, this is a simplified implementation that focuses on the V3 architecture
-            Debug.Log($"[V3 SEGMENTATION] Displayed frame {response.frame_id}, mask_size={segmentation.mask_width}x{segmentation.mask_height}");
         }
 
         /// <summary>
@@ -1092,16 +1115,19 @@ namespace PassthroughCameraSamples.Segmentation
             int uploadBytesCompressed = 0;  // Not available in response
             int downloadBytesCompressed = 0;  // Not available in response
             float avgConfidence = 0f;
-            int detectionCount = response.segmentation?.num_detections ?? 0;
+            int detectionCount = response.detections?.Length ?? 0;
 
-            if (response.segmentation != null && response.segmentation.confidences != null && response.segmentation.confidences.Length > 0)
+            // Calculate average confidence from detections array
+            if (response.detections != null && response.detections.Length > 0)
             {
                 float sum = 0f;
-                foreach (var conf in response.segmentation.confidences)
+                int count = 0;
+                foreach (var det in response.detections)
                 {
-                    sum += conf;
+                    sum += det.confidence;
+                    count++;
                 }
-                avgConfidence = sum / response.segmentation.confidences.Length;
+                avgConfidence = count > 0 ? sum / count : 0f;
             }
 
             // Update metrics in the main info panel
