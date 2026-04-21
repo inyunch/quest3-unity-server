@@ -97,7 +97,7 @@ namespace PassthroughCameraSamples.Segmentation
         // UDP Transport (Phase 1 - Non-Blocking)
         private System.Net.Sockets.UdpClient m_udpClient;
         private const int UDP_PORT = 8002;
-        [SerializeField] private bool m_useUDPTransport = false;  // Feature flag for safe rollout
+        [SerializeField] private bool m_useUDPTransport = true;  // Feature flag for safe rollout
 
         // NEW: Improved Freeze/Drop Metrics Tracking
         private float m_unityFrameTimeMs = 15.4f;  // Measured Unity frame time (default 65 FPS estimate)

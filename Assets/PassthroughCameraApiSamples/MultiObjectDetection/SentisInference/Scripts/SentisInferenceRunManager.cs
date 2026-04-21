@@ -102,7 +102,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
         // UDP Transport (Phase 1 - Non-Blocking)
         private System.Net.Sockets.UdpClient m_udpClient;
         private const int UDP_PORT = 8002;
-        [SerializeField] private bool m_useUDPTransport = false;  // Feature flag for safe rollout
+        [SerializeField] private bool m_useUDPTransport = true;  // Feature flag for safe rollout
 
         // Phase 3: Fixed cadence non-blocking send
         private float m_nextInferenceTime = 0f;  // Next time to send inference request
