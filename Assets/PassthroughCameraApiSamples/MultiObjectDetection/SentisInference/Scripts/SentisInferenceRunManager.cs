@@ -177,6 +177,16 @@ namespace PassthroughCameraSamples.MultiObjectDetection
 
         private void Update()
         {
+            // V3.0: ALWAYS poll for UDP responses (even if camera not ready)
+            // Responses may arrive for frames sent before camera stopped
+            if (m_useServerInference && m_useUDPTransport && m_transport != null)
+            {
+                while (m_transport.TryGetResponse(out FrameResponse response))
+                {
+                    HandleV3Response(response);
+                }
+            }
+
             // V3.0: Fixed cadence inference triggering (UDP mode only)
             if (m_useServerInference && m_useUDPTransport && m_cameraReady)
             {
@@ -198,12 +208,6 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                     StartCoroutine(RunInferenceNonBlocking());
 
                     Debug.Log($"[V3 DETECTION] Triggered inference at fixed cadence (interval={targetInterval * 1000f:F0}ms)");
-                }
-
-                // V3.0: Poll for UDP responses (non-blocking!)
-                while (m_transport.TryGetResponse(out FrameResponse response))
-                {
-                    HandleV3Response(response);
                 }
 
                 // V3.0: Periodic telemetry cleanup
@@ -407,10 +411,13 @@ namespace PassthroughCameraSamples.MultiObjectDetection
 
             Debug.Log($"[V3 DETECTION] Frame {trace.frame_id} created, size={jpegData.Length} bytes");
 
-            // 3. Send UDP (returns immediately - no blocking!)
-            m_transport.SendFrame(trace, jpegData);
+            // 3. Build minimal telemetry JSON for server (mode + scene)
+            string telemetryJson = "{\"mode\":\"detection\",\"scene\":\"MultiObjectDetection\"}";
 
-            Debug.Log($"[V3 DETECTION] Frame {trace.frame_id} sent via UDP");
+            // 4. Send UDP (returns immediately - no blocking!)
+            m_transport.SendFrame(trace, jpegData, telemetryJson);
+
+            Debug.Log($"[V3 DETECTION] Frame {trace.frame_id} sent via UDP (mode=detection)");
 
             // NO yield return - method completes immediately
             // Response will arrive asynchronously via background UDP listener

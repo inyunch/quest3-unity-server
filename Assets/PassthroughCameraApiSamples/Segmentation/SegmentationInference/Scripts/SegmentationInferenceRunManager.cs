@@ -86,6 +86,11 @@ namespace PassthroughCameraSamples.Segmentation
         private Dictionary<int, UnityWebRequest> m_pendingRequests = new Dictionary<int, UnityWebRequest>();
         private object m_frameTracesLock = new object();
 
+        // Legacy telemetry variables (for backward compatibility with old code paths)
+        private Dictionary<int, FrameTrace> m_frameTraces = new Dictionary<int, FrameTrace>();
+        private Queue<FrameTrace> m_completedFramesQueue = new Queue<FrameTrace>();
+        private FrameTrace m_lastCompletedTrace = null;
+
         // Phase 3: Fixed cadence non-blocking send
         private float m_nextInferenceTime = 0f;  // Next time to send inference request
         private bool m_cameraReady = false;  // Camera initialization complete
@@ -462,10 +467,13 @@ namespace PassthroughCameraSamples.Segmentation
 
             Debug.Log($"[V3 SEGMENTATION] Frame {trace.frame_id} created, size={jpegData.Length} bytes");
 
-            // 3. Send via UDPTransportManager (NON-BLOCKING!)
-            m_transport.SendFrame(trace, jpegData, telemetryJson: null);
+            // 3. Build minimal telemetry JSON for server (mode + scene)
+            string telemetryJson = $"{{\"mode\":\"segmentation\",\"scene\":\"Segmentation\",\"downsampleFactor\":{m_inferenceConfig.downsampleFactor}}}";
 
-            Debug.Log($"[V3 SEGMENTATION] Frame {trace.frame_id} sent via UDP");
+            // 4. Send via UDPTransportManager (NON-BLOCKING!)
+            m_transport.SendFrame(trace, jpegData, telemetryJson);
+
+            Debug.Log($"[V3 SEGMENTATION] Frame {trace.frame_id} sent via UDP (mode=segmentation)");
 
             // V3.0: NO polling coroutine needed - UDPTransportManager handles responses in background
             // Responses will be processed in Update() via TryGetResponse()
@@ -983,6 +991,16 @@ namespace PassthroughCameraSamples.Segmentation
 
         private void Update()
         {
+            // V3.0: ALWAYS poll for UDP responses (even if camera not ready)
+            // Responses may arrive for frames sent before camera stopped
+            if (m_useServerInference && m_useUDPTransport && m_transport != null)
+            {
+                while (m_transport.TryGetResponse(out FrameResponse response))
+                {
+                    HandleV3Response(response);
+                }
+            }
+
             // PHASE 3: Fixed cadence inference triggering (UDP mode only)
             if (m_useServerInference && m_useUDPTransport && m_cameraReady)
             {
@@ -1004,12 +1022,6 @@ namespace PassthroughCameraSamples.Segmentation
                     StartCoroutine(RunInferenceNonBlocking());
 
                     Debug.Log($"[V3 SEGMENTATION] Triggered inference at fixed cadence (interval={targetInterval * 1000f:F0}ms)");
-                }
-
-                // V3.0: Poll for UDP responses (non-blocking!)
-                while (m_transport.TryGetResponse(out FrameResponse response))
-                {
-                    HandleV3Response(response);
                 }
 
                 // V3.0: Periodic telemetry cleanup
@@ -1474,8 +1486,49 @@ namespace PassthroughCameraSamples.Segmentation
 
             return jpegBytes;
         }
+
+        // ============================================================================
+        // LEGACY METHODS (for backward compatibility with old code paths)
+        // These are no longer used in V3.0 but kept to avoid compilation errors
+        // ============================================================================
+
+        /// <summary>
+        /// LEGACY: Try to display the newest completed frame.
+        /// In V3.0, this is handled by HandleV3Response() in Update().
+        /// </summary>
+        private void TryDisplayNewestFrame()
+        {
+            // V3.0: This method is deprecated. Display logic is in HandleV3Response().
+            // Keeping empty implementation for backward compatibility with old code paths.
+        }
+
+        /// <summary>
+        /// LEGACY: Send frame via UDP.
+        /// In V3.0, this is handled by UDPTransportManager.SendFrame().
+        /// </summary>
+        private void SendFrameUDP(FrameTrace trace, byte[] jpegData)
+        {
+            // V3.0: This method is deprecated. Use m_transport.SendFrame() instead.
+            // Keeping empty implementation for backward compatibility with old code paths.
+            Debug.LogWarning($"[LEGACY] SendFrameUDP called for frame {trace.frame_id} - use V3 transport instead");
+        }
+
+        /// <summary>
+        /// LEGACY: Listen for HTTP response.
+        /// In V3.0, this is handled by UDPTransportManager's background thread.
+        /// </summary>
+        private IEnumerator ListenForResponseHTTP(int frameId)
+        {
+            // V3.0: This method is deprecated. Responses are handled by m_transport.TryGetResponse() in Update().
+            // Keeping empty implementation for backward compatibility with old code paths.
+            Debug.LogWarning($"[LEGACY] ListenForResponseHTTP called for frame {frameId} - use V3 transport instead");
+            yield break;
+        }
     }
 }
+
+
+
 
 
 
