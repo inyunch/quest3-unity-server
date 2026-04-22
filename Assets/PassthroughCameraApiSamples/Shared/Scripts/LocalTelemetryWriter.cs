@@ -126,26 +126,21 @@ namespace PassthroughCameraSamples.Shared
                 float uploadPct = totalMs > 0 ? (trace.upload_ms / totalMs) * 100f : 0f;
                 float downloadPct = totalMs > 0 ? (trace.download_ms / totalMs) * 100f : 0f;
 
-                // Calculate queue wait (server_process_start_ts - server_receive_ts)
-                float queueWaitMs = trace.server_process_start_ts > 0 && trace.server_receive_ts > 0
-                    ? trace.server_process_start_ts - trace.server_receive_ts
-                    : 0f;
-
                 var row = string.Join(",",
                     DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff"),  // timestamp
                     EscapeCsv(sceneName),                               // scene
                     EscapeCsv(trace.session_id),                        // session_id
                     trace.frame_id,                                     // frame_id
                     trace.unity_send_ts,                                // unity_send_ts
-                    trace.unity_receive_ts ?? 0,                        // unity_receive_ts
-                    trace.unity_display_ts ?? 0,                        // unity_display_ts
-                    trace.unity_drop_ts ?? 0,                           // unity_drop_ts
+                    trace.unity_receive_ts,                             // unity_receive_ts
+                    trace.unity_display_ts ?? 0L,                       // unity_display_ts
+                    trace.unity_drop_ts ?? 0L,                          // unity_drop_ts
                     trace.server_receive_ts,                            // server_receive_ts
                     trace.server_process_start_ts,                      // server_process_start_ts
                     trace.server_send_ts,                               // server_send_ts
                     trace.e2e_ms.ToString("F2"),                        // latency_ms
                     trace.upload_ms.ToString("F2"),                     // upload_ms
-                    queueWaitMs.ToString("F2"),                         // queue_wait_ms
+                    trace.queue_wait_ms.ToString("F2"),                 // queue_wait_ms (from server response)
                     trace.server_proc_ms.ToString("F2"),                // server_proc_ms
                     trace.download_ms.ToString("F2"),                   // download_ms
                     trace.parse_ms.ToString("F2"),                      // parse_ms
@@ -252,3 +247,4 @@ namespace PassthroughCameraSamples.Shared
         }
     }
 }
+

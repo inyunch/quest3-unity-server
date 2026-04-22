@@ -40,7 +40,8 @@ namespace PassthroughCameraSamples.Shared
         private UdpClient m_sendClient;       // For sending frames to server
         private UdpClient m_receiveClient;    // For receiving responses from server
         private Thread m_receiveThread;       // Background thread for UDP listener
-        private bool m_isRunning;             // Control flag for receive thread
+        private Thread m_heartbeatThread;     // Background thread for NAT hole punching
+        private bool m_isRunning;             // Control flag for background threads
 
         // ====================================================================
         // Thread-Safe Response Queue
@@ -94,6 +95,15 @@ namespace PassthroughCameraSamples.Shared
                 };
                 m_receiveThread.Start();
                 Debug.Log($"[UDP TRANSPORT] Background receiver thread started");
+
+                // Start background heartbeat thread (for NAT hole punching in 5G hotspot environments)
+                m_heartbeatThread = new Thread(HeartbeatLoop)
+                {
+                    IsBackground = true,
+                    Name = "UDP NAT Heartbeat"
+                };
+                m_heartbeatThread.Start();
+                Debug.Log($"[UDP TRANSPORT] NAT heartbeat thread started (5G hotspot compatible)");
             }
             catch (Exception e)
             {
@@ -209,6 +219,49 @@ namespace PassthroughCameraSamples.Shared
         }
 
         /// <summary>
+        /// Background thread loop for NAT hole punching heartbeat.
+        /// Sends periodic heartbeat from receive socket to keep NAT mapping alive.
+        /// Required for 5G hotspot environments where inbound UDP is blocked by NAT.
+        ///
+        /// How it works:
+        /// 1. Uses receive socket (bound to port 8003) to send heartbeat to server
+        /// 2. This creates NAT mapping: Quest:8003 ↔ Server:8002
+        /// 3. When server sends response (Server:8002 → Quest:8003), NAT allows it through
+        ///
+        /// Note: Heartbeat packet is only 9 bytes, server will ignore it (requires >= 70 bytes)
+        /// </summary>
+        private void HeartbeatLoop()
+        {
+            byte[] heartbeat = Encoding.UTF8.GetBytes("HEARTBEAT");  // 9 bytes
+            IPEndPoint serverEndpoint = new IPEndPoint(IPAddress.Parse(m_serverIP), m_sendPort);
+
+            Debug.Log($"[UDP HEARTBEAT] Loop started, target: {m_serverIP}:{m_sendPort}");
+
+            while (m_isRunning)
+            {
+                try
+                {
+                    // CRITICAL: Use receive socket to send heartbeat (creates NAT mapping)
+                    m_receiveClient.Send(heartbeat, heartbeat.Length, serverEndpoint);
+
+                    // Send every 2 seconds (NAT mappings typically expire after 30-60 seconds)
+                    Thread.Sleep(2000);
+                }
+                catch (Exception e)
+                {
+                    // Continue even on errors (socket might not be ready yet)
+                    if (m_isRunning)
+                    {
+                        Debug.LogWarning($"[UDP HEARTBEAT] Send failed: {e.Message}");
+                    }
+                    Thread.Sleep(2000);
+                }
+            }
+
+            Debug.Log($"[UDP HEARTBEAT] Loop stopped");
+        }
+
+        /// <summary>
         /// Parse UDP response bytes into FrameResponse object.
         /// Expected format: UTF-8 JSON string
         /// </summary>
@@ -259,7 +312,7 @@ namespace PassthroughCameraSamples.Shared
         {
             Debug.Log($"[UDP TRANSPORT] Shutting down... {GetStats()}");
 
-            // Stop receive thread
+            // Stop all background threads (receive + heartbeat)
             m_isRunning = false;
 
             // Close UDP clients
@@ -273,10 +326,15 @@ namespace PassthroughCameraSamples.Shared
                 Debug.LogWarning($"[UDP TRANSPORT] Error closing UDP clients: {e.Message}");
             }
 
-            // Wait for receive thread to finish
+            // Wait for background threads to finish
             if (m_receiveThread != null && m_receiveThread.IsAlive)
             {
                 m_receiveThread.Join(1000);  // Wait max 1 second
+            }
+
+            if (m_heartbeatThread != null && m_heartbeatThread.IsAlive)
+            {
+                m_heartbeatThread.Join(1000);  // Wait max 1 second
             }
 
             Debug.Log($"[UDP TRANSPORT] Shutdown complete");
@@ -291,3 +349,5 @@ namespace PassthroughCameraSamples.Shared
         }
     }
 }
+
+

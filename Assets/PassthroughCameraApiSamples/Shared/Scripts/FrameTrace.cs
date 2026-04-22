@@ -34,6 +34,7 @@ namespace PassthroughCameraSamples.Shared
         // === Derived Timing (calculated) ===
         public float e2e_ms;             // REQUIRED - unity_receive_ts - unity_send_ts
         public float server_proc_ms;     // OPTIONAL - from response.processing_time_ms
+        public float queue_wait_ms;      // OPTIONAL - from response.queue_wait_ms (time waiting in admission queue)
         public float upload_ms;          // OPTIONAL - estimated (residual method)
         public float download_ms;        // OPTIONAL - estimated (residual method)
         public float parse_ms;           // OPTIONAL - measured in Unity
@@ -47,7 +48,7 @@ namespace PassthroughCameraSamples.Shared
         public bool telemetry_sent;      // N+1 telemetry: true if this frame's telemetry has been sent to server
 
         // === NEW: Improved Freeze Metrics ===
-        public float freeze_duration_ms;      // Freeze time in milliseconds (freeze_frames × unity_frame_time)
+        public float freeze_duration_ms;      // Freeze time in milliseconds (freeze_frames ? unity_frame_time)
         public int cumulative_freeze_frames;  // Running total of freeze frames since session start
         public float freeze_ratio;            // Ratio: freeze_frames / (freeze_frames + 1)
 
@@ -65,6 +66,10 @@ namespace PassthroughCameraSamples.Shared
         public int upload_bytes_compressed;    // JPEG compressed size
         public int download_bytes_uncompressed; // JSON text size
         public int download_bytes_compressed;   // Gzip compressed size
+
+        // === Image Dimensions ===
+        public int image_width;          // Width of captured image
+        public int image_height;         // Height of captured image
 
         // === Results (generic object to avoid tight coupling) ===
         public object response;          // OPTIONAL - cached response (null if pending/failed)
@@ -90,12 +95,21 @@ namespace PassthroughCameraSamples.Shared
         /// <summary>
         /// Mark frame as completed when response is received.
         /// receiveTime should be Unix milliseconds.
+        ///
+        /// NOTE: If frame was already marked as Dropped, this will NOT change the state.
+        /// This allows late responses to update server timing on already-dropped frames.
         /// </summary>
         public void MarkCompleted(long receiveTime)
         {
             unity_receive_ts = receiveTime;
             e2e_ms = unity_receive_ts - unity_send_ts;  // Already in ms
-            state = FrameState.Completed;
+
+            // Don't overwrite final states (Dropped, Displayed, Failed)
+            // If frame was already dropped, keep it dropped but timing is still updated
+            if (state == FrameState.Pending)
+            {
+                state = FrameState.Completed;
+            }
         }
 
         /// <summary>
@@ -153,3 +167,5 @@ namespace PassthroughCameraSamples.Shared
         Failed      // Network error, timeout, or parse failure
     }
 }
+
+

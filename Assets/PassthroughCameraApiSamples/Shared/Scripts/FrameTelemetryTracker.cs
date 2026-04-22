@@ -9,7 +9,7 @@ namespace PassthroughCameraSamples.Shared
     /// Centralized frame state tracking and telemetry management.
     ///
     /// V3.0 Architecture:
-    /// - Manages frame traces (Pending → Completed → Displayed/Dropped/Failed)
+    /// - Manages frame traces (Pending ??Completed ??Displayed/Dropped/Failed)
     /// - Tracks last displayed frame for drop detection
     /// - Writes telemetry to local CSV via LocalTelemetryWriter
     /// - NO server-side telemetry - Unity-only tracking
@@ -111,6 +111,9 @@ namespace PassthroughCameraSamples.Shared
 
         /// <summary>
         /// Mark frame as completed when response is received.
+        ///
+        /// IMPORTANT: If response arrives after frame was already dropped, this will update
+        /// server timing fields and rewrite the CSV row to preserve the timing data.
         /// </summary>
         /// <param name="frameId">Frame number</param>
         /// <param name="response">Server response</param>
@@ -124,15 +127,19 @@ namespace PassthroughCameraSamples.Shared
                     return;
                 }
 
+                // Remember original state to detect late responses
+                FrameState originalState = trace.state;
+
                 // Update frame trace with response data
                 long receiveTime = TimestampUtil.GetUnixTimestampMs();
-                trace.MarkCompleted(receiveTime);
+                trace.MarkCompleted(receiveTime);  // Won't overwrite Dropped state (FrameTrace.cs line 108)
 
                 // Copy server timing
                 trace.server_receive_ts = response.server_receive_ts;
                 trace.server_process_start_ts = response.server_process_start_ts;
                 trace.server_send_ts = response.server_send_ts;
                 trace.server_proc_ms = response.processing_time_ms;
+                trace.queue_wait_ms = response.queue_wait_ms;  // Time waiting in admission queue
 
                 // Calculate upload/download times (residual method)
                 float totalMs = trace.e2e_ms;
@@ -151,7 +158,18 @@ namespace PassthroughCameraSamples.Shared
                     trace.detection_count = response.persons.Length;
                 }
 
-                Debug.Log($"[TELEMETRY] Frame {frameId} completed, e2e={trace.e2e_ms:F1}ms, state=Completed");
+                // If this is a late response for an already-dropped frame, rewrite CSV
+                if (originalState == FrameState.Dropped)
+                {
+                    Debug.Log($"[TELEMETRY] Late response for dropped frame {frameId}, " +
+                              $"server_receive_ts={trace.server_receive_ts}, " +
+                              $"server_proc_ms={trace.server_proc_ms:F1}ms, rewriting CSV");
+                    WriteLocalTelemetry(trace);
+                }
+                else
+                {
+                    Debug.Log($"[TELEMETRY] Frame {frameId} completed, e2e={trace.e2e_ms:F1}ms, state={trace.state}");
+                }
             }
         }
 
@@ -341,3 +359,5 @@ namespace PassthroughCameraSamples.Shared
         }
     }
 }
+
+
