@@ -2170,7 +2170,7 @@ MonoBehaviour:
     includeDepth: 0
     jpegQuality: 60
     downsampleFactor: 2
-    targetFPS: 5
+    targetFPS: 8
   m_minKeypointScore: 0.3
   m_serverUrl: 
   m_jpegQuality: 60

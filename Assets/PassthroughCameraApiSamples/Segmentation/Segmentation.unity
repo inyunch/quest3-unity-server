@@ -2302,7 +2302,7 @@ PrefabInstance:
     - target: {fileID: 7042133912099342453, guid: 9deb3717761ea024487884a940414be8, type: 3}
       propertyPath: m_spawnMarker
       value: 
-      objectReference: {fileID: -3704774548868432641, guid: be69472e7a9b58243aa0493fa78acef1, type: 3}
+      objectReference: {fileID: 0}
     - target: {fileID: 7042133912099342453, guid: 9deb3717761ea024487884a940414be8, type: 3}
       propertyPath: m_uiInference
       value: 
@@ -2410,11 +2410,11 @@ PrefabInstance:
       objectReference: {fileID: 1542092273}
     - target: {fileID: 2681575481727882275, guid: c9740e6c6f47fd442b765d80a969c45b, type: 3}
       propertyPath: m_inferenceConfig.targetFPS
-      value: 5
+      value: 10
       objectReference: {fileID: 0}
     - target: {fileID: 2681575481727882275, guid: c9740e6c6f47fd442b765d80a969c45b, type: 3}
       propertyPath: m_inferenceConfig.jpegQuality
-      value: 60
+      value: 30
       objectReference: {fileID: 0}
     - target: {fileID: 2681575481727882275, guid: c9740e6c6f47fd442b765d80a969c45b, type: 3}
       propertyPath: m_inferenceConfig.downsampleFactor
