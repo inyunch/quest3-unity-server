@@ -41,3 +41,25 @@ Assets/Plugins/Roslyn.meta
 __pycache__/
 *.pyc
 
+# MCP and Claude configuration (may contain sensitive tokens)
+.mcp.json
+.claude/settings.local.json
+.claude/skills/
+
+# Local telemetry data
+telemetry/
+telemetry_*.csv
+
+# Local screenshots
+Assets/Screenshots/
+Assets/Screenshots.meta
+
+# Test reports (temporary)
+PRE_DEPLOYMENT_TEST_REPORT.md
+UNITY_COMPILATION_FIX_REQUIRED.md
+V3_COMPILATION_FIX_STATUS.md
+
+# NuGet packages
+Assets/Plugins/NuGet/
+Assets/Plugins/NuGet.meta
+
