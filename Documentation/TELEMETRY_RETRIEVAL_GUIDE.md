@@ -27,46 +27,54 @@ telemetry_1b3e2a4c_2026-04-21_14-30-45.csv
 
 ## Command Line: Retrieve CSV Files
 
-### Option 1: Pull All Telemetry Files (Recommended)
+### Option 1: Two-Step Copy Method (Recommended for Android 11+)
 
-**Windows**:
+**Due to Android scoped storage restrictions**, direct pull from app private directory may fail. Use this two-step method:
+
+**Step 1: Copy to public directory**
 ```bash
-adb pull /sdcard/Android/data/com.samples.passthroughcamera/files/telemetry_*.csv .
+adb shell cp /storage/emulated/0/Android/data/com.samples.passthroughcamera/files/telemetry_*.csv /sdcard/
+```
+
+**Step 2: Pull from public directory**
+```bash
+adb pull /sdcard/telemetry_*.csv .
 ```
 
 **Expected Output**:
 ```
-/sdcard/Android/data/com.samples.passthroughcamera/files/telemetry_1b3e2a4c_2026-04-21_14-30-45.csv: 1 file pulled, 0 skipped. 45.2 MB/s (125834 bytes in 0.003s)
+/sdcard/telemetry_b9673611-412f-4f11-8110-49d2e2f4faa6_2026-04-21_20-05-07.csv: 1 file pulled. 45.2 MB/s (125834 bytes in 0.003s)
 ```
 
-**What this does**:
-- Pulls **all CSV files** matching `telemetry_*.csv` pattern
-- Saves to current directory on your PC
-- Wildcard `*` matches any session ID and timestamp
-
----
-
-### Option 2: Pull Specific File
-
-If you know the exact filename:
-
+**Optional: Clean up /sdcard/ after pulling**
 ```bash
-adb pull /sdcard/Android/data/com.samples.passthroughcamera/files/telemetry_1b3e2a4c_2026-04-21_14-30-45.csv .
+adb shell rm /sdcard/telemetry_*.csv
 ```
 
 ---
 
-### Option 3: Pull to Specific Folder
+### Option 2: Direct Pull (May Not Work on Android 11+)
 
-**Windows**:
+**If your Quest OS version supports it**, you can try direct pull:
+
 ```bash
-adb pull /sdcard/Android/data/com.samples.passthroughcamera/files/telemetry_*.csv C:\Telemetry\
+adb pull /sdcard/Android/data/com.samples.passthroughcamera/files/telemetry_*.csv .
 ```
 
-**Create folder first** (if needed):
+**If this fails with permission errors**, use **Option 1** instead.
+
+---
+
+### Option 3: Pull Entire Directory
+
+**Pull entire files directory** (includes all CSV files):
+
 ```bash
-mkdir C:\Telemetry
-adb pull /sdcard/Android/data/com.samples.passthroughcamera/files/telemetry_*.csv C:\Telemetry\
+# Copy to public directory first
+adb shell cp -r /storage/emulated/0/Android/data/com.samples.passthroughcamera/files/ /sdcard/telemetry_backup/
+
+# Pull directory
+adb pull /sdcard/telemetry_backup/ ./telemetry/
 ```
 
 ---
@@ -237,27 +245,31 @@ adb logcat -s Unity | findstr "LOCAL TELEMETRY"
 
 ---
 
-### Issue 3: Permission Denied
+### Issue 3: Permission Denied (Android 11+ Scoped Storage)
 
 **Error**:
 ```
 adb: error: failed to copy '/sdcard/Android/data/com.samples.passthroughcamera/files/telemetry_*.csv' to './telemetry_*.csv': remote couldn't read file: Permission denied
 ```
 
-**Solution 1**: Pull to user-accessible directory
-```bash
-# First copy to /sdcard (public directory)
-adb shell cp /sdcard/Android/data/com.samples.passthroughcamera/files/telemetry_*.csv /sdcard/
+**Root Cause**: Android 11+ has scoped storage restrictions preventing direct access to app-private directories via adb.
 
-# Then pull from /sdcard
+**Solution (Two-Step Method)** - This is now the **recommended approach**:
+```bash
+# Step 1: Copy to /sdcard (public directory)
+adb shell cp /storage/emulated/0/Android/data/com.samples.passthroughcamera/files/telemetry_*.csv /sdcard/
+
+# Step 2: Pull from /sdcard
 adb pull /sdcard/telemetry_*.csv .
+
+# Step 3 (Optional): Clean up /sdcard
+adb shell rm /sdcard/telemetry_*.csv
 ```
 
-**Solution 2**: Use adb root (if Quest is rooted)
-```bash
-adb root
-adb pull /sdcard/Android/data/com.samples.passthroughcamera/files/telemetry_*.csv .
-```
+**Why this works**:
+- `/sdcard/` is a public directory accessible by adb
+- `cp` command runs in shell context with app permissions
+- After copy, files are in public location for adb pull
 
 ---
 

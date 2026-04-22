@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Pull telemetry CSV files from Quest to PC.
+Uses two-step copy method to bypass Android 11+ scoped storage restrictions.
 
 Usage:
     python pull_telemetry.py [output_directory]
@@ -17,7 +18,8 @@ import os
 from pathlib import Path
 
 PACKAGE_NAME = "com.samples.passthroughcamera"
-REMOTE_PATH = f"/sdcard/Android/data/{PACKAGE_NAME}/files/"
+APP_PRIVATE_PATH = f"/storage/emulated/0/Android/data/{PACKAGE_NAME}/files/"
+PUBLIC_PATH = "/sdcard/"
 
 # ANSI color codes for terminal output
 class Colors:
@@ -69,7 +71,7 @@ def list_remote_files():
     """List telemetry files on Quest"""
     print_color("Checking for telemetry files on Quest...", Colors.YELLOW)
 
-    cmd = ["adb", "shell", "ls", "-lh", f"{REMOTE_PATH}telemetry_*.csv"]
+    cmd = ["adb", "shell", "ls", "-lh", f"{APP_PRIVATE_PATH}telemetry_*.csv"]
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0 or "No such file" in result.stderr:
@@ -81,7 +83,7 @@ def list_remote_files():
         print_color("  3. At least one inference session completed", Colors.YELLOW)
         print()
         print_color("Check Unity logs with:", Colors.CYAN)
-        print_color("  adb logcat -s Unity | grep 'LOCAL TELEMETRY'", Colors.CYAN)
+        print_color("  adb logcat -s Unity | grep 'TELEMETRY'", Colors.CYAN)
         return []
 
     print_color("Available files on Quest:", Colors.GREEN)
@@ -101,30 +103,62 @@ def list_remote_files():
 
     return files
 
-def pull_files(output_dir):
-    """Pull all telemetry files to PC"""
-    # Create output directory
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
+def copy_to_public():
+    """Copy files from app private directory to public /sdcard/"""
+    print_color("Step 1/3: Copying files to public directory on Quest...", Colors.YELLOW)
 
-    print_color(f"Pulling files to: {os.path.abspath(output_dir)}", Colors.YELLOW)
-
-    # Pull files
-    cmd = ["adb", "pull", f"{REMOTE_PATH}telemetry_*.csv", output_dir]
+    cmd = ["adb", "shell", "cp", f"{APP_PRIVATE_PATH}telemetry_*.csv", PUBLIC_PATH]
     result = subprocess.run(cmd, capture_output=True, text=True)
 
-    if result.returncode == 0:
-        print()
-        print_color("✓ Pull completed!", Colors.GREEN)
-        print()
-    else:
-        print_color("ERROR: Pull failed", Colors.RED)
+    if result.returncode != 0:
+        print_color("ERROR: Failed to copy files to public directory", Colors.RED)
         print(result.stderr)
         return False
 
+    print_color("✓ Files copied to /sdcard/", Colors.GREEN)
+    print()
     return True
+
+def pull_files(output_dir):
+    """Pull all telemetry files from /sdcard/ to PC"""
+    # Create output directory
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    print_color("Step 2/3: Pulling files from Quest to PC...", Colors.YELLOW)
+
+    # Pull files
+    cmd = ["adb", "pull", f"{PUBLIC_PATH}telemetry_*.csv", output_dir]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        print_color("ERROR: Failed to pull files from Quest", Colors.RED)
+        print(result.stderr)
+        return False
+
+    print_color(f"✓ Files pulled to: {os.path.abspath(output_dir)}", Colors.GREEN)
+    print()
+
+    return True
+
+def cleanup_public():
+    """Clean up temporary files from /sdcard/"""
+    print_color("Step 3/3: Cleaning up temporary files on Quest...", Colors.YELLOW)
+
+    cmd = ["adb", "shell", "rm", f"{PUBLIC_PATH}telemetry_*.csv"]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        print_color("Warning: Failed to clean up /sdcard/ (files may remain)", Colors.YELLOW)
+    else:
+        print_color("✓ Temporary files removed from /sdcard/", Colors.GREEN)
+
+    print()
 
 def list_local_files(output_dir):
     """List pulled files in local directory"""
+    print_color("✓ Pull completed successfully!", Colors.GREEN)
+    print()
+
     print_color("Pulled files:", Colors.CYAN)
 
     files = sorted(Path(output_dir).glob("telemetry_*.csv"))
@@ -133,8 +167,8 @@ def list_local_files(output_dir):
         print_color("  (none)", Colors.YELLOW)
         return
 
-    print(f"{'Filename':<50} {'Size (KB)':<12} {'Modified'}")
-    print("-" * 80)
+    print(f"{'Filename':<60} {'Size (KB)':<12} {'Modified'}")
+    print("-" * 90)
 
     for file in files:
         size_kb = file.stat().st_size / 1024
@@ -142,20 +176,20 @@ def list_local_files(output_dir):
         from datetime import datetime
         mtime_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
 
-        print(f"{file.name:<50} {size_kb:>10.2f}  {mtime_str}")
+        print(f"{file.name:<60} {size_kb:>10.2f}  {mtime_str}")
 
     print()
     print_color(f"Files saved to: {os.path.abspath(output_dir)}", Colors.GREEN)
     print()
 
 def delete_remote_files():
-    """Ask user if they want to delete files from Quest"""
-    print_color("Delete telemetry files from Quest to free space? (y/N): ", Colors.YELLOW, end="")
+    """Ask user if they want to delete original files from Quest"""
+    print_color("Delete original telemetry files from Quest to free space? (y/N): ", Colors.YELLOW, end="")
     response = input().strip().lower()
 
     if response == "y":
-        print_color("Deleting files on Quest...", Colors.YELLOW)
-        cmd = ["adb", "shell", "rm", f"{REMOTE_PATH}telemetry_*.csv"]
+        print_color("Deleting files from Quest app directory...", Colors.YELLOW)
+        cmd = ["adb", "shell", "rm", f"{APP_PRIVATE_PATH}telemetry_*.csv"]
         result = subprocess.run(cmd, capture_output=True, text=True)
 
         if result.returncode == 0:
@@ -186,9 +220,24 @@ def main():
     if not files:
         return 1
 
-    # Pull files
+    # ===========================================================================
+    # TWO-STEP COPY METHOD (Android 11+ scoped storage workaround)
+    # ===========================================================================
+
+    # Step 1: Copy to public directory
+    if not copy_to_public():
+        return 1
+
+    # Step 2: Pull files
     if not pull_files(output_dir):
         return 1
+
+    # Step 3: Clean up /sdcard/
+    cleanup_public()
+
+    # ===========================================================================
+    # DISPLAY RESULTS
+    # ===========================================================================
 
     # List pulled files
     list_local_files(output_dir)
@@ -197,7 +246,11 @@ def main():
     print_color("You can now open these CSV files in Excel for analysis.", Colors.CYAN)
     print()
 
-    # Ask if user wants to delete files from Quest
+    # ===========================================================================
+    # OPTIONAL: DELETE FROM QUEST
+    # ===========================================================================
+
+    # Ask if user wants to delete original files from Quest
     delete_remote_files()
 
     print()

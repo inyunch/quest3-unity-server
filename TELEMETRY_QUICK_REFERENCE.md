@@ -8,24 +8,29 @@
 
 ## 🚀 Quick Commands
 
-### Pull All Files
+### Pull All Files (Recommended: Two-Step Method)
+
+**Android 11+ requires two-step copy to bypass scoped storage restrictions:**
+
 ```bash
-adb pull /sdcard/Android/data/com.samples.passthroughcamera/files/telemetry_*.csv .
+# Step 1: Copy to public directory
+adb shell cp /storage/emulated/0/Android/data/com.samples.passthroughcamera/files/telemetry_*.csv /sdcard/
+
+# Step 2: Pull from public directory
+adb pull /sdcard/telemetry_*.csv .
+
+# Step 3 (Optional): Clean up /sdcard
+adb shell rm /sdcard/telemetry_*.csv
 ```
 
 ### List Files on Quest
 ```bash
-adb shell ls -lh /sdcard/Android/data/com.samples.passthroughcamera/files/telemetry_*.csv
+adb shell ls -lh /storage/emulated/0/Android/data/com.samples.passthroughcamera/files/telemetry_*.csv
 ```
 
-### Pull to Specific Folder
+### Delete Files from Quest (Free Space)
 ```bash
-adb pull /sdcard/Android/data/com.samples.passthroughcamera/files/telemetry_*.csv C:\Telemetry\
-```
-
-### Delete Files on Quest
-```bash
-adb shell rm /sdcard/Android/data/com.samples.passthroughcamera/files/telemetry_*.csv
+adb shell rm /storage/emulated/0/Android/data/com.samples.passthroughcamera/files/telemetry_*.csv
 ```
 
 ---
