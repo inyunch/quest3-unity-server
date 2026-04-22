@@ -21,10 +21,25 @@ namespace PassthroughCameraSamples.StartScene
         public OVRCameraRig VrRig;
         [SerializeField] private ModelAsset m_objectDetectionModel;
 
-        private void Awake() => SentisInferenceRunManager.PreloadModel(m_objectDetectionModel);
+        private void Awake()
+        {
+            try
+            {
+                if (m_objectDetectionModel != null)
+                {
+                    SentisInferenceRunManager.PreloadModel(m_objectDetectionModel);
+                }
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogWarning($"[START MENU] Failed to preload model: {ex.Message}");
+            }
+        }
 
         private void Start()
         {
+            Debug.Log("[START MENU] Start() called");
+
             var generalScenes = new List<Tuple<int, string>>();
             var passthroughScenes = new List<Tuple<int, string>>();
             var inferenceScenes = new List<Tuple<int, string>>();
@@ -55,6 +70,8 @@ namespace PassthroughCameraSamples.StartScene
             }
 
             var uiBuilder = DebugUIBuilder.Instance;
+            Debug.Log($"[START MENU] uiBuilder = {(uiBuilder != null ? "found" : "NULL!")}");
+            Debug.Log($"[START MENU] Found {inferenceScenes.Count} inference scenes");
 
             // Inference Modes section (left pane)
             if (inferenceScenes.Count > 0)
@@ -107,7 +124,9 @@ namespace PassthroughCameraSamples.StartScene
                 }
             }
 
+            Debug.Log("[START MENU] Calling uiBuilder.Show()...");
             uiBuilder.Show();
+            Debug.Log("[START MENU] uiBuilder.Show() completed!");
         }
 
         private static void LoadScene(int idx)

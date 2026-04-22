@@ -65,10 +65,51 @@ namespace PassthroughCameraSamples.Shared
         public SegmentationResult segmentation; // Mask + metadata
 
         // ====================================================================
+        // Unity-side Timing Metrics (optional, computed by Unity)
+        // ====================================================================
+        public float latency_ms;            // Total E2E latency (Unity send → Unity receive)
+        public float upload_ms;             // Upload time (Unity → Server)
+        public float download_ms;           // Download time (Server → Unity)
+        public float parse_ms;              // JSON parse time (Unity side)
+        public int upload_bytes_compressed; // Upload payload size (bytes)
+        public int download_bytes_compressed; // Download payload size (bytes)
+
+        // ====================================================================
         // Error Information
         // ====================================================================
         public string error;                // Error message if inference failed
         public string status;               // "success" or "error"
+
+        // ====================================================================
+        // Backward Compatibility Properties (for legacy managers)
+        // ====================================================================
+
+        /// <summary>
+        /// Legacy field name for input_image_width
+        /// </summary>
+        public int input_width
+        {
+            get => input_image_width;
+            set => input_image_width = value;
+        }
+
+        /// <summary>
+        /// Legacy field name for input_image_height
+        /// </summary>
+        public int input_height
+        {
+            get => input_image_height;
+            set => input_image_height = value;
+        }
+
+        /// <summary>
+        /// Legacy wrapper for persons array (used by PoseInferenceRunManager)
+        /// </summary>
+        public PoseData pose
+        {
+            get => new PoseData { persons = this.persons };
+            set => this.persons = value?.persons;
+        }
 
         /// <summary>
         /// Check if response contains valid detection results
@@ -105,6 +146,12 @@ namespace PassthroughCameraSamples.Shared
         public string class_name;           // Class name (e.g., "person")
         public float confidence;            // Detection confidence [0-1]
         public float[] bbox;                // [x1, y1, x2, y2] in normalized coords [0-1]
+
+        // Segmentation-specific fields (optional, only present in segmentation mode)
+        public string mask_png_base64;      // Per-detection PNG mask (base64 encoded)
+        public int[] bbox_pixels;           // Bounding box in pixel coordinates [x1, y1, x2, y2]
+        public int mask_width;              // Width of the mask
+        public int mask_height;             // Height of the mask
     }
 
     /// <summary>
@@ -142,5 +189,14 @@ namespace PassthroughCameraSamples.Shared
         public int num_detections;          // Number of detected objects
         public int[] class_ids;             // Array of detected class IDs
         public float[] confidences;         // Array of detection confidences
+    }
+
+    /// <summary>
+    /// Legacy wrapper for pose data (backward compatibility)
+    /// </summary>
+    [Serializable]
+    public class PoseData
+    {
+        public PersonPose[] persons;        // Array of detected persons
     }
 }
