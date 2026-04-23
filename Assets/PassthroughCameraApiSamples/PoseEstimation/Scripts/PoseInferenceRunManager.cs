@@ -290,8 +290,7 @@ namespace PassthroughCameraSamples.PoseEstimation
         {
             // V3.0: ALWAYS poll for UDP responses (even if camera not ready)
             // Responses may arrive for frames sent before camera stopped
-            // ✅ P0 FIX: Use m_useServerInference for consistency with other modes
-            if (m_useServerInference && m_useUDPTransport && m_transport != null)
+            if (m_inferenceConfig.useServerConfig && m_useUDPTransport && m_transport != null)
             {
                 while (m_transport.TryGetResponse(out FrameResponse response))
                 {

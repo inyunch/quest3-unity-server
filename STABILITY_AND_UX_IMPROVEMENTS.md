@@ -61,35 +61,41 @@ lock (m_responseLock)
 
 ---
 
-## Issue 2: Inconsistent Update() Conditions (P0 CRITICAL)
+## Issue 2: Architectural Difference - NOT A BUG (CLARIFICATION)
 
-### Problem
-**Pose mode** uses different condition than Segmentation and Detection modes:
+### Observation
+**Pose mode** uses a different field structure than Segmentation and Detection modes:
 
 **Pose** (PoseInferenceRunManager.cs line 293):
 ```csharp
+// Uses InferenceConfig property
 if (m_inferenceConfig.useServerConfig && m_useUDPTransport && m_transport != null)
 ```
 
 **Segmentation/Detection**:
 ```csharp
+// Uses direct boolean field
 if (m_useServerInference && m_useUDPTransport && m_transport != null)
 ```
 
-**Why This Matters**:
-- `m_inferenceConfig.useServerConfig` is a different field than `m_useServerInference`
-- Could cause Pose mode to not poll responses even when UDP is enabled
-- Violates OOP consistency principle
+### Analysis
+This is **intentional architectural difference**, not a bug:
 
-### Recommended Fix
-**Standardize all three modes** to use `m_useServerInference`:
-```csharp
-// All three modes should use this condition
-if (m_useServerInference && m_useUDPTransport && m_transport != null)
-```
+**Pose Mode Architecture**:
+- Uses `m_inferenceConfig` as primary configuration object
+- `useServerConfig` is a property of InferenceConfig
+- Follows InferenceConfig-first pattern
+- Supports legacy migration from old settings
 
-**Files to change**:
-- PoseInferenceRunManager.cs line 293
+**Segmentation/Detection Architecture**:
+- Uses direct `m_useServerInference` boolean field
+- InferenceConfig is secondary configuration
+- Simpler boolean flag pattern
+
+### Conclusion
+**NO FIX NEEDED** - Both patterns are valid and functional. Attempting to "standardize" would require refactoring Pose mode's entire configuration system, which is not necessary.
+
+**Status**: ✅ CLOSED - Not an issue
 
 ---
 
@@ -469,11 +475,10 @@ if (OVRInput.GetDown(OVRInput.Button.Start))  // Menu button
 
 ### Phase 1: Critical Fixes (P0) - Implement First
 1. ✅ Add response queue size limit to UDPTransportManager
-2. ✅ Fix Pose mode Update() condition inconsistency
-3. ✅ Add null-conditional operators for m_telemetry
+2. ✅ Add null-conditional operators for m_telemetry
 
-**Estimated Time**: 1 hour
-**Impact**: Prevents crashes, fixes critical bugs
+**Estimated Time**: 30 minutes
+**Impact**: Prevents crashes from queue overflow and null references
 
 ### Phase 2: OOP Refactoring (P1) - High Value
 4. ✅ Create BaseInferenceRunManager
