@@ -484,20 +484,33 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             int jpegQuality = m_inferenceConfig.jpegQuality;
             byte[] jpegBytes = textureToEncode.EncodeToJPG(jpegQuality);
 
-            // ✅ CRITICAL FIX: Clean up temporary textures to prevent memory leak
-            // Clean up downsampled texture if created
+            // ✅ FIXED: Defer texture cleanup to next frame to ensure encoding is complete
+            // This prevents potential timing issues with texture destruction
             if (downsampleFactor > 1 && textureToEncode != tex2D)
             {
-                Destroy(textureToEncode);
+                Texture2D toDestroy = textureToEncode;
+                StartCoroutine(DestroyNextFrame(toDestroy));
             }
 
-            // ✅ NEW: Clean up converted tex2D if we created it from RenderTexture
             if (createdTex2D && tex2D != null)
             {
-                Destroy(tex2D);
+                Texture2D toDestroy = tex2D;
+                StartCoroutine(DestroyNextFrame(toDestroy));
             }
 
             return jpegBytes;
+        }
+
+        /// <summary>
+        /// Destroy a texture on the next frame to ensure all operations are complete.
+        /// </summary>
+        private System.Collections.IEnumerator DestroyNextFrame(UnityEngine.Object obj)
+        {
+            yield return null;  // Wait one frame
+            if (obj != null)
+            {
+                Destroy(obj);
+            }
         }
 
         // ============================================================================

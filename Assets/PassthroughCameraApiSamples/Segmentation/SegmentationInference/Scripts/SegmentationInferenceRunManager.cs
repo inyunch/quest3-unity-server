@@ -1076,7 +1076,6 @@ namespace PassthroughCameraSamples.Segmentation
             // Render each detection's mask
             int maskIndex = 0;
             int masksRendered = 0;
-            List<Texture2D> tempTextures = new List<Texture2D>();  // Track textures for cleanup
 
             foreach (var det in response.detections)
             {
@@ -1090,22 +1089,33 @@ namespace PassthroughCameraSamples.Segmentation
 
                         // Create texture from PNG with RGBA support for alpha channel
                         maskTexture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
-                        tempTextures.Add(maskTexture);  // Track for cleanup
 
                         if (maskTexture.LoadImage(maskBytes))
                         {
                             // Pass mask to UI manager for rendering
+                            // ✅ FIXED: Don't destroy texture here - RenderMask will store it in MaskData
+                            // Texture will be destroyed when ClearAllMasks() is called next frame
                             m_uiInference.RenderMask(maskIndex, maskTexture, det.bbox_pixels, cachedCameraPose);
                             masksRendered++;
                         }
                         else
                         {
                             Debug.LogError($"[V3 SEGMENTATION] Failed to LoadImage for detection {maskIndex}");
+                            // Clean up texture only if LoadImage failed
+                            if (maskTexture != null)
+                            {
+                                Destroy(maskTexture);
+                            }
                         }
                     }
                     catch (System.Exception e)
                     {
                         Debug.LogError($"[V3 SEGMENTATION] Error decoding mask {maskIndex}: {e.Message}");
+                        // Clean up texture only on error
+                        if (maskTexture != null)
+                        {
+                            Destroy(maskTexture);
+                        }
                     }
 
                     maskIndex++;
@@ -1116,21 +1126,6 @@ namespace PassthroughCameraSamples.Segmentation
 
             // Update UI with metrics
             UpdateUIMetrics(response);
-
-            // CRITICAL FIX: Destroy all temporary textures after RenderMask has copied them
-            foreach (var tex in tempTextures)
-            {
-                if (tex != null)
-                {
-                    Destroy(tex);
-                }
-            }
-            tempTextures.Clear();
-
-            if (tempTextures.Count > 0)
-            {
-                Debug.Log($"[V3 SEGMENTATION] Cleaned up {tempTextures.Count} temporary textures");
-            }
         }
 
         /// <summary>

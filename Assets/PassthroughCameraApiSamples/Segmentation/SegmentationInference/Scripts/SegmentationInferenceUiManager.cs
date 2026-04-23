@@ -30,9 +30,6 @@ namespace PassthroughCameraSamples.Segmentation
         private readonly List<MaskData> m_masksDrawn = new();
         private readonly List<MaskData> m_maskPool = new();
 
-        // Material cache to prevent memory leaks (reused for all masks)
-        private Material m_cachedMaskMaterial;
-
         internal class BoundingBoxData
         {
             public string ClassName;
@@ -60,21 +57,6 @@ namespace PassthroughCameraSamples.Segmentation
             if (m_maskOverlayPrefab != null)
             {
                 m_maskOverlayPrefab.gameObject.SetActive(false);
-            }
-
-            // Create cached material for mask rendering (prevents memory leak)
-            m_cachedMaskMaterial = new Material(Shader.Find("Unlit/Transparent"));
-            Debug.Log("[SEGMENTATION UI] Cached mask material created");
-        }
-
-        private void OnDestroy()
-        {
-            // Clean up cached material
-            if (m_cachedMaskMaterial != null)
-            {
-                Destroy(m_cachedMaskMaterial);
-                m_cachedMaskMaterial = null;
-                Debug.Log("[SEGMENTATION UI] Cached mask material destroyed");
             }
         }
 
@@ -398,12 +380,16 @@ namespace PassthroughCameraSamples.Segmentation
             quad.transform.SetPositionAndRotation(worldSpaceCenter, Quaternion.LookRotation(normal));
             quad.transform.localScale = new Vector3(size.x, size.y, 1f);
 
-            // Apply mask texture with transparency using cached material (prevents leak)
+            // ✅ FIXED: Create NEW material instance for each quad (not shared cached material)
+            // This allows each quad to have its own texture reference
             var renderer = quad.GetComponent<Renderer>();
-            renderer.material = m_cachedMaskMaterial;  // Reuse cached material
-            m_cachedMaskMaterial.mainTexture = maskTexture;
-            m_cachedMaskMaterial.color = new Color(0f, 1f, 0f, 0.7f); // Green tint with transparency
+            Material quadMaterial = new Material(Shader.Find("Unlit/Transparent"));
+            quadMaterial.mainTexture = maskTexture;
+            quadMaterial.color = new Color(0f, 1f, 0f, 0.7f); // Green tint with transparency
+            renderer.material = quadMaterial;
 
+            // ✅ FIXED: Store texture in MaskData so it stays alive until ClearAllMasks()
+            maskData.MaskTexture = maskTexture;
             maskData.SamplePoints.Add(quad);
 
             Debug.LogError($"[MASK QUAD] Created quad at {worldSpaceCenter}, size={size.x:F2}x{size.y:F2}m, dist={distance:F2}m, bbox=({x1},{y1})-({x2},{y2})");
@@ -439,19 +425,28 @@ namespace PassthroughCameraSamples.Segmentation
 
         private void ReturnMaskToPool(MaskData mask)
         {
-            // CRITICAL: Clean up point cloud spheres
+            // ✅ CRITICAL: Clean up quads AND their materials to prevent memory leak
             if (mask.SamplePoints != null)
             {
                 foreach (var point in mask.SamplePoints)
                 {
                     if (point != null)
                     {
+                        // Destroy the material first (Unity doesn't auto-destroy materials)
+                        var renderer = point.GetComponent<Renderer>();
+                        if (renderer != null && renderer.material != null)
+                        {
+                            Destroy(renderer.material);
+                        }
+
+                        // Then destroy the GameObject
                         Destroy(point);
                     }
                 }
                 mask.SamplePoints.Clear();
             }
 
+            // ✅ Clean up mask texture (now stored in MaskData)
             if (mask.MaskTexture != null)
             {
                 Destroy(mask.MaskTexture);

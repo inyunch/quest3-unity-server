@@ -26,7 +26,9 @@
       "Bash(taskkill /F /PID 64160)",
       "Bash(netstat:*)",
       "Bash(findstr:*)",
-      "Bash(taskkill /F /PID 232140)"
+      "Bash(taskkill /F /PID 232140)",
+      "mcp__UnityMCP__read_console",
+      "mcp__UnityMCP__manage_scene"
     ],
     "deny": [],
     "ask": []
