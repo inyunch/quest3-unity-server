@@ -86,7 +86,26 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 ### 3. 安裝 TensorFlow (GPU) - MoveNet 需要
 
 ```bash
-pip install tensorflow[and-cuda] tensorflow-hub
+# Windows: 標準版自動支援 GPU
+pip install tensorflow tensorflow-hub
+
+# Linux: 使用 [and-cuda]
+pip install "tensorflow[and-cuda]>=2.16.0" tensorflow-hub
+```
+
+### 完整安裝（推薦使用腳本）
+
+**Windows**:
+```bash
+cd C:\Repo\Github\vision_server
+install_gpu_windows.bat
+```
+
+**Linux**:
+```bash
+cd /path/to/vision_server
+chmod +x install_gpu_linux.sh
+./install_gpu_linux.sh
 ```
 
 ### 4. 驗證
@@ -232,9 +251,18 @@ start_gpu.bat
 
 ## 📚 相關文件
 
-- **完整安裝指南**: `C:\Repo\Github\vision_server\GPU_SETUP.md`
+### vision_server (伺服器端)
+- **Linux 快速部署**: `C:\Repo\Github\vision_server\QUICKSTART_LINUX.md` ⭐
+- **部署檢查清單**: `C:\Repo\Github\vision_server\DEPLOYMENT_CHECKLIST.md` ⭐
+- **上傳檔案清單**: `C:\Repo\Github\vision_server\FILES_TO_UPLOAD.txt`
+- **完整安裝指南**: `C:\Repo\Github\vision_server\INSTALL.md`
+- **GPU 配置詳解**: `C:\Repo\Github\vision_server\GPU_SETUP.md`
 - **GPU 檢測工具**: `C:\Repo\Github\vision_server\check_gpu.py`
+- **Systemd 服務範例**: `C:\Repo\Github\vision_server\vision-server.service.example`
+
+### Unity 專案
 - **MoveNet 實現**: `MOVENET_THUNDER_IMPLEMENTATION.md`
+- **本指南**: `GPU_QUICKSTART.md`
 
 ---
 
