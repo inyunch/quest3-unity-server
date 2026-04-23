@@ -2165,16 +2165,17 @@ MonoBehaviour:
   m_inferenceConfig:
     useServerConfig: 1
     baseUrl: http://35.9.28.119:8001/infer_human
-    mode: 2
+    mode: 6
     includeMask: 0
     includeDepth: 0
     jpegQuality: 60
     downsampleFactor: 2
-    targetFPS: 15
+    targetFPS: 20
   m_minKeypointScore: 0.3
   m_serverUrl: 
   m_jpegQuality: 60
   m_useUDPTransport: 1
+  m_smoothingFactor: 0.3
 --- !u!224 &8587535026074093613 stripped
 RectTransform:
   m_CorrespondingSourceObject: {fileID: 8722207748505512711, guid: 259c0c899b7e0c14aa431eefdc0aacc6, type: 3}

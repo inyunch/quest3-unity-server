@@ -173,53 +173,40 @@ namespace PassthroughCameraSamples.Shared
             // Calculate session duration
             float sessionDuration = Time.time - m_sessionStartTime;
 
-            // Build metrics string
+            // Calculate network time (upload + download)
+            float networkMs = m_uploadMs + m_downloadMs;
+
+            // Build simplified metrics string
             string metricsStr = $"<b>{m_currentMode}</b>\n";
-            metricsStr += $"<color=#00FF00>Inference FPS: {avgInferenceFPS:F1}</color> (target: {m_targetFPS:F1})\n";
+            metricsStr += $"<color=#00FF00>FPS: {avgInferenceFPS:F1}</color> (target: {m_targetFPS:F1})\n\n";
+
+            // Time metrics (simplified)
+            metricsStr += $"<b>Time (ms)</b>\n";
             metricsStr += $"E2E: {m_e2eMs:F0}ms\n";
-
-            if (m_showDetailedMetrics)
-            {
-                // Calculate percentages
-                float uploadPct = m_e2eMs > 0 ? (m_uploadMs / m_e2eMs) * 100f : 0f;
-                float serverPct = m_e2eMs > 0 ? (m_serverProcMs / m_e2eMs) * 100f : 0f;
-                float downloadPct = m_e2eMs > 0 ? (m_downloadMs / m_e2eMs) * 100f : 0f;
-                float parsePct = m_e2eMs > 0 ? (m_parseMs / m_e2eMs) * 100f : 0f;
-
-                metricsStr += $" ├Upload: {m_uploadMs:F0}ms ({uploadPct:F0}%)\n";
-                metricsStr += $" ├Server: {m_serverProcMs:F0}ms ({serverPct:F0}%)\n";
-                metricsStr += $" ├Download: {m_downloadMs:F0}ms ({downloadPct:F0}%)\n";
-                metricsStr += $" └Parse: {m_parseMs:F0}ms ({parsePct:F0}%)\n";
-            }
+            metricsStr += $"Network: {networkMs:F0}ms\n\n";
 
             // Detection metrics
-            metricsStr += $"Detections: {m_detectionCount}\n";
+            metricsStr += $"<b>Detection</b>\n";
+            metricsStr += $"Count: {m_detectionCount}\n";
 
             if (m_avgConfidence > 0f)
             {
-                metricsStr += $"Avg Conf: {m_avgConfidence:F2}\n";
+                metricsStr += $"Conf: {m_avgConfidence:F2}\n";
             }
 
             if (m_keypointAvgConf > 0f)
             {
-                metricsStr += $"Keypoint Conf: {m_keypointAvgConf:F2}\n";
+                metricsStr += $"Keypoint: {m_keypointAvgConf:F2}\n";
             }
 
-            // Bandwidth metrics
-            if (m_showDetailedMetrics)
-            {
-                metricsStr += $"<size=80%>Upload: {FormatBytes(m_uploadBytes)}\n";
-                metricsStr += $"Download: {FormatBytes(m_downloadBytes)}</size>\n";
-            }
-
-            // Frame statistics (Part D)
-            metricsStr += $"\n<b>Frame Stats</b> ({sessionDuration:F0}s)\n";
+            // Frame statistics
+            metricsStr += $"\n<b>Frames</b> ({sessionDuration:F0}s)\n";
             metricsStr += $"Total: {m_totalFrames}\n";
 
             if (m_droppedFrames > 0 || m_frozenFrames > 0)
             {
-                metricsStr += $"<color=#FFAA00>Dropped: {m_droppedFrames} ({GetDropFrameRatio() * 100f:F1}%)</color>\n";
-                metricsStr += $"<color=#FFAA00>Frozen: {m_frozenFrames} ({GetFreezeFrameRatio() * 100f:F1}%)</color>";
+                metricsStr += $"<color=#FFAA00>Dropped: {m_droppedFrames}</color>\n";
+                metricsStr += $"<color=#FFAA00>Frozen: {m_frozenFrames}</color>";
             }
             else
             {

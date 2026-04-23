@@ -12,7 +12,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: d557dcd1953c7ff4d8c33ae4134cc7da, type: 3}
   m_Name: ServerConfig
   m_EditorClassIdentifier: 
-  m_serverIP: 35.23.78.177
+  m_serverIP: 35.12.218.36
   m_serverPort: 8001
   m_inferenceEndpoint: /infer_human
   m_segmentationEndpoint: /segmentation

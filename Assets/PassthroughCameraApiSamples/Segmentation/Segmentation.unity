@@ -501,7 +501,7 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.5, y: 0.5}
   m_AnchorMax: {x: 0.5, y: 0.5}
-  m_AnchoredPosition: {x: 0, y: -0.15}
+  m_AnchoredPosition: {x: 0, y: 0.05}
   m_SizeDelta: {x: 100, y: 100}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!1 &256469435
@@ -2410,7 +2410,7 @@ PrefabInstance:
       objectReference: {fileID: 1542092273}
     - target: {fileID: 2681575481727882275, guid: c9740e6c6f47fd442b765d80a969c45b, type: 3}
       propertyPath: m_inferenceConfig.targetFPS
-      value: 15
+      value: 20
       objectReference: {fileID: 0}
     - target: {fileID: 2681575481727882275, guid: c9740e6c6f47fd442b765d80a969c45b, type: 3}
       propertyPath: m_inferenceConfig.jpegQuality
