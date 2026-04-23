@@ -321,8 +321,8 @@ namespace PassthroughCameraSamples.PoseEstimation
                     Debug.Log($"[V3 POSE] Triggered inference at fixed cadence (interval={targetInterval * 1000f:F0}ms)");
                 }
 
-                // V3.0: Periodic telemetry cleanup
-                if (Time.frameCount % 300 == 0)
+                // V3.0: Periodic telemetry cleanup (every 60 frames = ~1 second at 60fps)
+                if (Time.frameCount % 60 == 0)
                 {
                     m_telemetry.CleanupOldTraces();
                 }
@@ -529,6 +529,8 @@ namespace PassthroughCameraSamples.PoseEstimation
         {
             // 1. Convert texture to Texture2D if needed
             Texture2D tex2D = texture as Texture2D;
+            bool createdTex2D = false;  // Track if we created tex2D (for cleanup)
+
             if (tex2D == null)
             {
                 // Handle RenderTexture case
@@ -536,6 +538,7 @@ namespace PassthroughCameraSamples.PoseEstimation
                 if (rt != null)
                 {
                     tex2D = new Texture2D(rt.width, rt.height, TextureFormat.RGB24, false);
+                    createdTex2D = true;  // Mark for cleanup
                     RenderTexture.active = rt;
                     tex2D.ReadPixels(new Rect(0, 0, rt.width, rt.height), 0, 0);
                     tex2D.Apply();
@@ -583,10 +586,17 @@ namespace PassthroughCameraSamples.PoseEstimation
             int jpegQuality = m_inferenceConfig.jpegQuality;
             byte[] jpegBytes = textureToEncode.EncodeToJPG(jpegQuality);
 
+            // CRITICAL FIX: Clean up temporary textures to prevent memory leak
             // Clean up downsampled texture if created
             if (downsampleFactor > 1 && textureToEncode != tex2D)
             {
                 Destroy(textureToEncode);
+            }
+
+            // Clean up converted tex2D if we created it from RenderTexture
+            if (createdTex2D && tex2D != null)
+            {
+                Destroy(tex2D);
             }
 
             return jpegBytes;

@@ -1024,8 +1024,8 @@ namespace PassthroughCameraSamples.Segmentation
                     Debug.Log($"[V3 SEGMENTATION] Triggered inference at fixed cadence (interval={targetInterval * 1000f:F0}ms)");
                 }
 
-                // V3.0: Periodic telemetry cleanup
-                if (Time.frameCount % 300 == 0)
+                // V3.0: Periodic telemetry cleanup (every 60 frames = ~1 second at 60fps)
+                if (Time.frameCount % 60 == 0)
                 {
                     m_telemetry.CleanupOldTraces();
                 }
@@ -1075,18 +1075,21 @@ namespace PassthroughCameraSamples.Segmentation
             // Render each detection's mask
             int maskIndex = 0;
             int masksRendered = 0;
+            List<Texture2D> tempTextures = new List<Texture2D>();  // Track textures for cleanup
 
             foreach (var det in response.detections)
             {
                 if (!string.IsNullOrEmpty(det.mask_png_base64))
                 {
+                    Texture2D maskTexture = null;
                     try
                     {
                         // Decode base64 PNG to bytes
                         byte[] maskBytes = System.Convert.FromBase64String(det.mask_png_base64);
 
                         // Create texture from PNG with RGBA support for alpha channel
-                        Texture2D maskTexture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                        maskTexture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                        tempTextures.Add(maskTexture);  // Track for cleanup
 
                         if (maskTexture.LoadImage(maskBytes))
                         {
@@ -1112,6 +1115,21 @@ namespace PassthroughCameraSamples.Segmentation
 
             // Update UI with metrics
             UpdateUIMetrics(response);
+
+            // CRITICAL FIX: Destroy all temporary textures after RenderMask has copied them
+            foreach (var tex in tempTextures)
+            {
+                if (tex != null)
+                {
+                    Destroy(tex);
+                }
+            }
+            tempTextures.Clear();
+
+            if (tempTextures.Count > 0)
+            {
+                Debug.Log($"[V3 SEGMENTATION] Cleaned up {tempTextures.Count} temporary textures");
+            }
         }
 
         /// <summary>

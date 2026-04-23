@@ -30,6 +30,9 @@ namespace PassthroughCameraSamples.Segmentation
         private readonly List<MaskData> m_masksDrawn = new();
         private readonly List<MaskData> m_maskPool = new();
 
+        // Material cache to prevent memory leaks (reused for all masks)
+        private Material m_cachedMaskMaterial;
+
         internal class BoundingBoxData
         {
             public string ClassName;
@@ -57,6 +60,21 @@ namespace PassthroughCameraSamples.Segmentation
             if (m_maskOverlayPrefab != null)
             {
                 m_maskOverlayPrefab.gameObject.SetActive(false);
+            }
+
+            // Create cached material for mask rendering (prevents memory leak)
+            m_cachedMaskMaterial = new Material(Shader.Find("Unlit/Transparent"));
+            Debug.Log("[SEGMENTATION UI] Cached mask material created");
+        }
+
+        private void OnDestroy()
+        {
+            // Clean up cached material
+            if (m_cachedMaskMaterial != null)
+            {
+                Destroy(m_cachedMaskMaterial);
+                m_cachedMaskMaterial = null;
+                Debug.Log("[SEGMENTATION UI] Cached mask material destroyed");
             }
         }
 
@@ -380,12 +398,11 @@ namespace PassthroughCameraSamples.Segmentation
             quad.transform.SetPositionAndRotation(worldSpaceCenter, Quaternion.LookRotation(normal));
             quad.transform.localScale = new Vector3(size.x, size.y, 1f);
 
-            // Apply mask texture with transparency
+            // Apply mask texture with transparency using cached material (prevents leak)
             var renderer = quad.GetComponent<Renderer>();
-            var material = new Material(Shader.Find("Unlit/Transparent"));
-            material.mainTexture = maskTexture;
-            material.color = new Color(0f, 1f, 0f, 0.7f); // Green tint with transparency
-            renderer.material = material;
+            renderer.material = m_cachedMaskMaterial;  // Reuse cached material
+            m_cachedMaskMaterial.mainTexture = maskTexture;
+            m_cachedMaskMaterial.color = new Color(0f, 1f, 0f, 0.7f); // Green tint with transparency
 
             maskData.SamplePoints.Add(quad);
 

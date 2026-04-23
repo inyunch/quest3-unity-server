@@ -54,8 +54,8 @@ namespace PassthroughCameraSamples.Shared
         // ====================================================================
         // Cleanup Configuration
         // ====================================================================
-        private const int MAX_FRAME_TRACES = 100;
-        private const float FRAME_TIMEOUT_SECONDS = 5.0f;
+        private const int MAX_FRAME_TRACES = 50;         // ✅ Reduced from 100 (memory optimization)
+        private const float FRAME_TIMEOUT_SECONDS = 2.0f; // ✅ Reduced from 5.0f (memory optimization)
 
         /// <summary>
         /// Constructor - Initialize telemetry tracker.
