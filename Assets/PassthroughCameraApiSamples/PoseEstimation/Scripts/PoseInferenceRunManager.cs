@@ -54,6 +54,13 @@ namespace PassthroughCameraSamples.PoseEstimation
         private float m_nextInferenceTime = 0f;  // Next time to send inference request
         private bool m_cameraReady = false;  // Camera initialization complete
 
+        // Keypoint smoothing to reduce jitter
+        private Dictionary<string, Dictionary<string, Vector2>> m_previousKeypoints = new Dictionary<string, Dictionary<string, Vector2>>();
+        [Header("Smoothing Configuration")]
+        [SerializeField, Range(0f, 0.9f)]
+        [Tooltip("Smoothing factor for keypoint positions. 0=no smoothing, 0.9=maximum smoothing. Recommended: 0.3")]
+        private float m_smoothingFactor = 0.3f;
+
         private IEnumerator Start()
         {
             // Generate unique session ID for this recording session
@@ -387,8 +394,11 @@ namespace PassthroughCameraSamples.PoseEstimation
             {
                 Debug.Log($"[V3 POSE] Frame {response.frame_id}: {pose.persons.Length} person(s)");
 
-                foreach (var p in pose.persons)
+                for (int personIdx = 0; personIdx < pose.persons.Length; personIdx++)
                 {
+                    var p = pose.persons[personIdx];
+                    string personId = $"person_{personIdx}";  // Unique ID for each person
+
                     PersonSkeleton person = new PersonSkeleton
                     {
                         keypoints = new List<Keypoint>(),
@@ -399,11 +409,14 @@ namespace PassthroughCameraSamples.PoseEstimation
                     {
                         foreach (var kp in p.keypoints)
                         {
+                            // Apply smoothing to reduce jitter
+                            Vector2 smoothedPos = SmoothKeypoint(personId, kp.name, new Vector2(kp.x, kp.y));
+
                             person.keypoints.Add(new Keypoint
                             {
                                 name = kp.name,
-                                x = kp.x,
-                                y = kp.y,
+                                x = smoothedPos.x,
+                                y = smoothedPos.y,
                                 score = kp.score
                             });
                         }
@@ -424,6 +437,46 @@ namespace PassthroughCameraSamples.PoseEstimation
 
             // Update UI metrics
             UpdateUIMetrics(response);
+        }
+
+        /// <summary>
+        /// Smooth keypoint position using exponential moving average to reduce jitter.
+        /// </summary>
+        /// <param name="personId">Unique identifier for the person</param>
+        /// <param name="keypointName">Name of the keypoint (e.g., "nose", "left_wrist")</param>
+        /// <param name="newPosition">New position from server (normalized 0-1)</param>
+        /// <returns>Smoothed position</returns>
+        private Vector2 SmoothKeypoint(string personId, string keypointName, Vector2 newPosition)
+        {
+            // Skip smoothing if disabled
+            if (m_smoothingFactor <= 0f)
+            {
+                return newPosition;
+            }
+
+            // Get or create person's keypoint dictionary
+            if (!m_previousKeypoints.ContainsKey(personId))
+            {
+                m_previousKeypoints[personId] = new Dictionary<string, Vector2>();
+            }
+
+            var personKeypoints = m_previousKeypoints[personId];
+
+            // Check if we have previous position for this keypoint
+            if (personKeypoints.TryGetValue(keypointName, out Vector2 prevPos))
+            {
+                // Apply exponential moving average (EMA) smoothing
+                // Higher smoothing factor = more smoothing (slower response)
+                Vector2 smoothed = Vector2.Lerp(newPosition, prevPos, m_smoothingFactor);
+                personKeypoints[keypointName] = smoothed;
+                return smoothed;
+            }
+            else
+            {
+                // First time seeing this keypoint, use new position directly
+                personKeypoints[keypointName] = newPosition;
+                return newPosition;
+            }
         }
 
         /// <summary>
