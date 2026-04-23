@@ -56,7 +56,16 @@ namespace PassthroughCameraSamples.Shared
         /// - Slower (~300-450ms E2E)
         /// - Download: ~375KB (mask + depth map)
         /// </summary>
-        SegmentationWithDepth = 5
+        SegmentationWithDepth = 5,
+
+        /// <summary>
+        /// Pose estimation V2 using MoveNet Thunder (mode=pose_v2)
+        /// - Fast alternative to Keypoint R-CNN
+        /// - 40-60% faster than standard pose mode (~180ms vs ~290ms E2E)
+        /// - Optimized for single person detection
+        /// - Download: ~20KB
+        /// </summary>
+        PoseEstimationV2 = 6
     }
 
     /// <summary>
@@ -109,6 +118,8 @@ namespace PassthroughCameraSamples.Shared
                     return "detection";
                 case InferenceMode.PoseEstimation:
                     return "pose";
+                case InferenceMode.PoseEstimationV2:
+                    return "pose_v2";
                 case InferenceMode.Both:
                     return "both";
                 case InferenceMode.DepthEstimation:
@@ -213,6 +224,8 @@ namespace PassthroughCameraSamples.Shared
                     return "Object Detection";
                 case InferenceMode.PoseEstimation:
                     return "Pose Estimation";
+                case InferenceMode.PoseEstimationV2:
+                    return "Pose Estimation V2 (MoveNet)";
                 case InferenceMode.Both:
                     return "Detection + Pose";
                 case InferenceMode.DepthEstimation:
