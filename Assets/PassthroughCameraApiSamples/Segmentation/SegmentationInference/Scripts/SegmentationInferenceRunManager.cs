@@ -1025,9 +1025,10 @@ namespace PassthroughCameraSamples.Segmentation
                 }
 
                 // V3.0: Periodic telemetry cleanup (every 60 frames = ~1 second at 60fps)
+                // ✅ P0 FIX: Null-safe operator in case telemetry init failed
                 if (Time.frameCount % 60 == 0)
                 {
-                    m_telemetry.CleanupOldTraces();
+                    m_telemetry?.CleanupOldTraces();
                 }
             }
         }

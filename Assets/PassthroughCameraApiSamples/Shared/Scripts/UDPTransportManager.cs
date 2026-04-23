@@ -56,6 +56,12 @@ namespace PassthroughCameraSamples.Shared
         private int m_framesSent = 0;
         private int m_responsesReceived = 0;
         private int m_parseErrors = 0;
+        private int m_droppedResponses = 0;
+
+        // ====================================================================
+        // Queue Management
+        // ====================================================================
+        private const int MAX_RESPONSE_QUEUE_SIZE = 10;  // Keep only last 10 responses to prevent memory growth
 
         /// <summary>
         /// Constructor - Initialize UDP transport manager.
@@ -192,6 +198,14 @@ namespace PassthroughCameraSamples.Shared
                         // Add to thread-safe queue for main thread consumption
                         lock (m_responseLock)
                         {
+                            // ✅ P0 FIX: Drop oldest response if queue full (prevents unbounded growth)
+                            if (m_responseQueue.Count >= MAX_RESPONSE_QUEUE_SIZE)
+                            {
+                                var dropped = m_responseQueue.Dequeue();
+                                m_droppedResponses++;
+                                Debug.LogWarning($"[UDP TRANSPORT] Response queue full ({MAX_RESPONSE_QUEUE_SIZE}), dropped frame {dropped.frame_id}");
+                            }
+
                             m_responseQueue.Enqueue(response);
                             m_responsesReceived++;
                         }
@@ -300,7 +314,7 @@ namespace PassthroughCameraSamples.Shared
             lock (m_responseLock)
             {
                 return $"Sent={m_framesSent}, Received={m_responsesReceived}, " +
-                       $"QueueSize={m_responseQueue.Count}, ParseErrors={m_parseErrors}";
+                       $"Dropped={m_droppedResponses}, QueueSize={m_responseQueue.Count}, ParseErrors={m_parseErrors}";
             }
         }
 
