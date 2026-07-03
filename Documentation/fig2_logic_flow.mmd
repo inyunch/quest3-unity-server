@@ -1,0 +1,113 @@
+graph TB
+
+    %% ─────────────────────────────────────────────
+    %% UPDATE LOOP
+    %% ─────────────────────────────────────────────
+    subgraph LOOP["Unity Update() — called every rendered frame ~60 Hz"]
+        A["Update() entry"] --> B{"useServerInference\n&& useUDPTransport?"}
+
+        B -->|"Yes (V3.0)"| C["TryGetResponse()\nDrain response queue\n(non-blocking)"]
+        B -->|"No (local)"| LOC["RunInference()\nLocal Sentis path\nConvert → Tensor → Engine\n→ NMS → DrawUIBoxes"]
+
+        C --> D{"Response\nin queue?"}
+        D -->|"Yes"| E["HandleV3Response(response)"]
+        D -->|"No"| F{"time >=\nm_nextInferenceTime?"}
+        E --> F
+
+        F -->|"Yes — send next frame"| G["Compute cadence BEFORE dispatch\nm_nextInferenceTime =\nnow + 1 / targetFPS\n(decouples send rate from RTT)"]
+        G --> H["StartCoroutine\nRunInferenceNonBlocking()"]
+        F -->|"No"| Z["End frame\n(render continues at 60 Hz)"]
+        H --> Z
+        LOC --> Z
+    end
+
+    %% ─────────────────────────────────────────────
+    %% NON-BLOCKING SEND
+    %% ─────────────────────────────────────────────
+    subgraph SEND["RunInferenceNonBlocking() — fire-and-forget coroutine"]
+        S1["Get Texture\ncameraAccess.GetTexture()"] --> S2["EncodeTextureToJPEG\nquality=80  20–50 KB\nOptional downsample"]
+        S2 --> S3["m_frameId++\nm_telemetry.CreateFrame()\nFrameTrace  state=Pending\nupload_bytes = jpegData.Length"]
+        S3 --> S4["Build telemetry JSON\n{mode, scene}"]
+        S4 --> S5["m_transport.SendFrame(trace, jpeg, json)\n━━ UDP datagram ━━\n70B header: magic | session_id | frame_id\n| unity_send_ts (t₁) | SHA-256 | tlen\nVariable: JSON + JPEG\n→ server port 8002"]
+        S5 --> S6["Coroutine returns\nNO yield — main thread unblocked\nResponse arrives asynchronously"]
+    end
+
+    %% ─────────────────────────────────────────────
+    %% BACKGROUND UDP RECV (background thread)
+    %% ─────────────────────────────────────────────
+    subgraph RECV["UDPTransportManager — background ReceiveThread"]
+        R1["Socket.Receive()\nlisten on port 8003"] --> R2["Parse JSON response\nExtract frame_id, server timing fields"]
+        R2 --> R3["Enqueue to\nConcurrentQueue<FrameResponse>\nmax = 10"]
+        R4["HeartbeatThread\n9-byte HEARTBEAT every 2 s\nNAT hole-punching (5G hotspot)"]
+    end
+
+    %% ─────────────────────────────────────────────
+    %% RESPONSE HANDLING
+    %% ─────────────────────────────────────────────
+    subgraph HANDLE["HandleV3Response(response)"]
+        H1["MarkFrameCompleted(frame_id, response)\n━━ Timing calculation ━━\nunity_receive_ts = now  (t₄)\ne2e_ms = t₄ − t₁  (unity_send_ts)\nserver_e2e_ms = proc_end − recv_ts\nnetworkMs = e2e_ms − server_e2e_ms\nupload_ms ≈ networkMs / 2\ndownload_ms ≈ networkMs / 2\nparse_ms from JSON deserialization"]
+        H1 --> H2["DisplayV3Frame(response)\nScale bbox: cameraRes → modelRes\n(scaleX = modelW / imgW)\nDrawUIBoxes() → AR overlay"]
+        H2 --> H3["UpdateMetricsDisplay(response)\nm_sharedHUD.UpdateMetrics(response)\nm_inferenceHUD.UpdateHUD(...)"]
+        H3 --> H4["MarkFrameDisplayed(frame_id)\nMark older pending frames → Dropped\nfreeze_frames = frameId − lastDisplayed − 1\nWriteLocalTelemetry → CSV flush"]
+    end
+
+    %% ─────────────────────────────────────────────
+    %% HUD
+    %% ─────────────────────────────────────────────
+    subgraph HUD["SharedInferenceHUD — Update() every frame"]
+        U1["Store latest metrics\ne2eMs, uploadMs, serverProcMs\ndownloadMs, parseMs, detections"] --> U2["Calculate inference FPS\n1000 / e2eMs\nRolling avg (10 samples)"]
+        U2 --> U3["Format text\nFPS | E2E | breakdown\nObjects | Upload KB | Drop count"]
+        U3 --> U4["TextMeshProUGUI.text = …"]
+    end
+
+    %% ─────────────────────────────────────────────
+    %% FRAME STATE MACHINE
+    %% ─────────────────────────────────────────────
+    subgraph FSM["FrameTelemetryTracker — Frame Lifecycle"]
+        direction LR
+        FS1["Pending\nt₁ = unity_send_ts"] --> FS2["Completed\nt₄ = unity_receive_ts"]
+        FS2 --> FS3["Displayed\n→ CSV row written"]
+        FS2 --> FS4["Dropped\n(superseded by newer frame)\n→ CSV row written"]
+        FS1 --> FS5["Failed\n(error / timeout)\n→ CSV row written"]
+    end
+
+    %% ─────────────────────────────────────────────
+    %% LATENCY BREAKDOWN
+    %% ─────────────────────────────────────────────
+    subgraph LAT["E2E Latency Decomposition  L_e2e = L_up + L_queue + L_inf + L_down + L_parse"]
+        direction LR
+        LA["L_upload\nt₂ − t₁\n~10–50 ms\nJPEG encode + UDP send"]
+        LB["L_queue\nqueue_wait_ms\nt_proc_start − t₂\n~0–50 ms\nBounded queue wait"]
+        LC["L_inference\nprocessing_time_ms\nt_proc_end − t_proc_start\n~10–300 ms\nGPU model forward pass"]
+        LD["L_download\n≈ L_net / 2\n~10–50 ms\nUDP response push"]
+        LE["L_parse\nparse_ms\n~2–20 ms\nJSON deserialize"]
+        LA --> LB --> LC --> LD --> LE
+    end
+
+    %% ─────────────────────────────────────────────
+    %% CONNECTIONS
+    %% ─────────────────────────────────────────────
+    H --> S1
+    S5 -.->|"UDP :8002"| R1
+    R3 -.->|"TryGetResponse()"| C
+    E --> H1
+    H3 --> U1
+    H4 --> FS3
+
+    %% ─────────────────────────────────────────────
+    %% STYLING
+    %% ─────────────────────────────────────────────
+    classDef unity fill:#1a1a2e,color:#e0e0ff,stroke:#5555cc,stroke-width:2px
+    classDef send  fill:#002b1a,color:#d0ffd0,stroke:#22aa55,stroke-width:2px
+    classDef recv  fill:#2b1a00,color:#ffe0a0,stroke:#cc8800,stroke-width:2px
+    classDef hud   fill:#1a001a,color:#ffccff,stroke:#aa22aa,stroke-width:2px
+    classDef fsm   fill:#0a0a0a,color:#cccccc,stroke:#555555,stroke-width:1px
+    classDef lat   fill:#1a1a1a,color:#aaaaaa,stroke:#444444,stroke-width:1px
+
+    class A,B,C,D,F,G,H,Z,LOC unity
+    class S1,S2,S3,S4,S5,S6 send
+    class R1,R2,R3,R4 recv
+    class H1,H2,H3,H4 unity
+    class U1,U2,U3,U4 hud
+    class FS1,FS2,FS3,FS4,FS5 fsm
+    class LA,LB,LC,LD,LE lat
