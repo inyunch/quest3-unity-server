@@ -357,7 +357,10 @@ namespace PassthroughCameraSamples.PoseEstimation
             // 2. Display pose results
             DisplayV3Frame(response);
 
-            // 3. Mark as displayed (this automatically writes to CSV)
+            // 3. Update HUD metrics (CRITICAL: Must be AFTER MarkFrameCompleted but ALWAYS called)
+            UpdateUIMetrics(response);
+
+            // 4. Mark as displayed (this automatically writes to CSV)
             m_telemetry.MarkFrameDisplayed(response.frame_id);
         }
 
@@ -435,8 +438,7 @@ namespace PassthroughCameraSamples.PoseEstimation
                 Debug.Log($"[V3 POSE] Frame {response.frame_id} has no persons, clearing skeletons");
             }
 
-            // Update UI metrics
-            UpdateUIMetrics(response);
+            // NOTE: UpdateUIMetrics is now called in HandleV3Response (always, regardless of pose data/tracking)
         }
 
         /// <summary>
@@ -481,94 +483,90 @@ namespace PassthroughCameraSamples.PoseEstimation
 
         /// <summary>
         /// Update UI components with inference metrics from FrameResponse.
+        /// Uses server-provided timing breakdown for accurate network time calculation.
         /// </summary>
         private void UpdateUIMetrics(FrameResponse response)
         {
-            float e2eMs = response.server_e2e_ms;
-            float uploadMs = 0f;  // Not tracked separately in V3
-            float serverProcMs = response.processing_time_ms;
-            float downloadMs = 0f;  // Not tracked separately in V3
-            float parseMs = 0f;  // Not tracked separately in V3
-            int uploadBytesCompressed = 0;  // Not available in response
-            int downloadBytesCompressed = 0;  // Not available in response
+            Debug.Log($"[POSE MANAGER] UpdateUIMetrics called");
+            Debug.Log($"[POSE MANAGER] m_sharedHUD={(m_sharedHUD != null ? "Connected" : "NULL")}, m_inferenceHUD={(m_inferenceHUD != null ? "Connected" : "NULL")}");
+            Debug.Log($"[POSE MANAGER] Response: E2E={response.latency_ms:F0}ms, server_e2e={response.server_e2e_ms:F0}ms, parse={response.parse_ms:F0}ms");
 
-            // Detection metrics
-            int detectionCount = 0;
-            float avgConfidence = 0f;
-            if (response.HasDetections() && response.detections != null && response.detections.Length > 0)
+            // SharedInferenceHUD now calculates metrics directly from FrameResponse
+            if (m_sharedHUD != null)
             {
-                detectionCount = response.detections.Length;
-                float sum = 0f;
-                foreach (var det in response.detections)
-                {
-                    sum += det.confidence;
-                }
-                avgConfidence = sum / detectionCount;
+                m_sharedHUD.UpdateMetrics(response);
             }
 
-            // Keypoint average confidence
-            float keypointAvgConf = 0f;
-            if (response.HasPose() && response.pose.persons != null && response.pose.persons.Length > 0)
+            // Legacy HUD update (if still used)
+            if (m_inferenceHUD != null)
             {
-                List<float> allScores = new List<float>();
-                foreach (var person in response.pose.persons)
+                float e2eMs = response.latency_ms;
+                float serverE2eMs = response.server_e2e_ms;
+                float parseMs = response.parse_ms;
+                float networkMs = e2eMs - serverE2eMs - parseMs;  // Upload + Download
+                float serverProcMs = response.processing_time_ms;
+
+                // Detection metrics
+                int detectionCount = 0;
+                float avgConfidence = 0f;
+                if (response.HasDetections() && response.detections != null && response.detections.Length > 0)
                 {
-                    if (person != null && person.keypoints != null)
+                    detectionCount = response.detections.Length;
+                    float sum = 0f;
+                    foreach (var det in response.detections)
                     {
-                        foreach (var kp in person.keypoints)
+                        sum += det.confidence;
+                    }
+                    avgConfidence = sum / detectionCount;
+                }
+
+                // Keypoint average confidence
+                float keypointAvgConf = 0f;
+                if (response.HasPose() && response.pose.persons != null && response.pose.persons.Length > 0)
+                {
+                    List<float> allScores = new List<float>();
+                    foreach (var person in response.pose.persons)
+                    {
+                        if (person != null && person.keypoints != null)
                         {
-                            if (kp.score > 0f)
+                            foreach (var kp in person.keypoints)
                             {
-                                allScores.Add(kp.score);
+                                if (kp.score > 0f)
+                                {
+                                    allScores.Add(kp.score);
+                                }
                             }
                         }
                     }
-                }
-                if (allScores.Count > 0)
-                {
-                    float sum = 0f;
-                    foreach (var score in allScores)
+                    if (allScores.Count > 0)
                     {
-                        sum += score;
+                        float sum = 0f;
+                        foreach (var score in allScores)
+                        {
+                            sum += score;
+                        }
+                        keypointAvgConf = sum / allScores.Count;
                     }
-                    keypointAvgConf = sum / allScores.Count;
                 }
-            }
 
-            // Update legacy HUD
-            if (m_inferenceHUD != null)
-            {
+                Debug.Log($"[POSE MANAGER] Calling m_inferenceHUD.UpdateHUD with E2E={e2eMs:F0}ms, server={serverProcMs:F0}ms, parse={parseMs:F0}ms");
                 m_inferenceHUD.UpdateHUD(
                     e2eMs,
-                    uploadMs,
+                    networkMs / 2,  // uploadMs (approximation)
                     serverProcMs,
-                    downloadMs,
+                    networkMs / 2,  // downloadMs (approximation)
                     parseMs,
-                    uploadBytesCompressed,
+                    0,  // uploadBytesCompressed
                     0,  // downloadBytesUncompressed
-                    downloadBytesCompressed,
+                    0,  // downloadBytesCompressed
                     detectionCount,
                     avgConfidence,
                     keypointAvgConf
                 );
             }
-
-            // Update SharedInferenceHUD
-            if (m_sharedHUD != null)
+            else
             {
-                m_sharedHUD.UpdateMetrics(
-                    e2eMs,
-                    uploadMs,
-                    serverProcMs,
-                    downloadMs,
-                    parseMs,
-                    uploadBytesCompressed,
-                    0,  // downloadBytesUncompressed
-                    downloadBytesCompressed,
-                    detectionCount,
-                    avgConfidence,
-                    keypointAvgConf
-                );
+                Debug.LogWarning("[POSE MANAGER] m_inferenceHUD is NULL, cannot update!");
             }
         }
 

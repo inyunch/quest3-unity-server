@@ -239,7 +239,10 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             // 2. Display detection results
             DisplayV3Frame(response);
 
-            // 3. Mark as displayed (this automatically writes to CSV)
+            // 3. Update HUD metrics (CRITICAL: Must be AFTER MarkFrameCompleted but ALWAYS called)
+            UpdateMetricsDisplay(response);
+
+            // 4. Mark as displayed (this automatically writes to CSV)
             m_telemetry.MarkFrameDisplayed(response.frame_id);
         }
 
@@ -295,8 +298,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             // Draw detections using UI inference (DrawUIBoxes method)
             m_uiInference.DrawUIBoxes(m_detections, m_inputSize, cachedCameraPose);
 
-            // Update metrics with this frame's data
-            UpdateMetricsDisplay(response);
+            // NOTE: UpdateMetricsDisplay is now called in HandleV3Response (always, regardless of detections/tracking)
         }
 
         /// <summary>
@@ -304,6 +306,10 @@ namespace PassthroughCameraSamples.MultiObjectDetection
         /// </summary>
         private void UpdateMetricsDisplay(FrameResponse response)
         {
+            Debug.Log($"[MANAGER] UpdateMetricsDisplay called");
+            Debug.Log($"[MANAGER] m_sharedHUD={(m_sharedHUD != null ? "Connected" : "NULL")}, m_inferenceHUD={(m_inferenceHUD != null ? "Connected" : "NULL")}, m_uiMenuManager={(m_uiMenuManager != null ? "Connected" : "NULL")}");
+            Debug.Log($"[MANAGER] Response: E2E={response.latency_ms:F0}ms, server_e2e={response.server_e2e_ms:F0}ms, parse={response.parse_ms:F0}ms");
+
             // Calculate average detection confidence
             float avgConfidence = 0f;
             if (response.detections != null && response.detections.Length > 0)
@@ -316,65 +322,56 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 avgConfidence = sum / response.detections.Length;
             }
 
-            // Calculate latency breakdown
-            float e2eMs = response.latency_ms;
-            float uploadMs = response.upload_ms;
-            float downloadMs = response.download_ms;
-            float serverProcMs = response.processing_time_ms;
-            float parseMs = response.parse_ms;
-
-            int uploadBytesCompressed = response.upload_bytes_compressed;
-            int downloadBytesCompressed = response.download_bytes_compressed;
-            int downloadBytesUncompressed = 0;  // Not tracked in V3
-
-            // Update metrics in the main info panel (grey bottom panel)
-            if (m_uiMenuManager != null)
-            {
-                m_uiMenuManager.UpdateMetrics(
-                    e2eMs,
-                    uploadMs,
-                    serverProcMs,
-                    downloadMs,
-                    parseMs,
-                    uploadBytesCompressed,
-                    downloadBytesCompressed,
-                    avgConfidence
-                );
-            }
-
-            // Update real-time HUD overlay (legacy)
-            if (m_inferenceHUD != null)
-            {
-                m_inferenceHUD.UpdateHUD(
-                    e2eMs,
-                    uploadMs,
-                    serverProcMs,
-                    downloadMs,
-                    parseMs,
-                    uploadBytesCompressed,
-                    downloadBytesUncompressed,
-                    downloadBytesCompressed,
-                    response.detections?.Length ?? 0,
-                    avgConfidence
-                );
-            }
-
-            // Update SharedInferenceHUD with metrics
+            // SharedInferenceHUD now calculates metrics directly from FrameResponse
             if (m_sharedHUD != null)
             {
-                m_sharedHUD.UpdateMetrics(
-                    e2eMs,
-                    uploadMs,
-                    serverProcMs,
-                    downloadMs,
-                    parseMs,
-                    uploadBytesCompressed,
-                    downloadBytesUncompressed,
-                    downloadBytesCompressed,
-                    response.detections?.Length ?? 0,
-                    avgConfidence,
-                    0f  // No keypoint confidence for detection mode
-                );
+                m_sharedHUD.UpdateMetrics(response);
+            }
+
+            // Legacy HUD updates (if still used)
+            if (m_uiMenuManager != null || m_inferenceHUD != null)
+            {
+                // Use server-provided timing breakdown
+                float e2eMs = response.latency_ms;
+                float serverE2eMs = response.server_e2e_ms;
+                float parseMs = response.parse_ms;
+                float networkMs = e2eMs - serverE2eMs - parseMs;  // Upload + Download
+                float serverProcMs = response.processing_time_ms;
+
+                if (m_uiMenuManager != null)
+                {
+                    m_uiMenuManager.UpdateMetrics(
+                        e2eMs,
+                        networkMs / 2,  // uploadMs (approximation)
+                        serverProcMs,
+                        networkMs / 2,  // downloadMs (approximation)
+                        parseMs,
+                        0,  // uploadBytesCompressed
+                        0,  // downloadBytesCompressed
+                        avgConfidence
+                    );
+                }
+
+                if (m_inferenceHUD != null)
+                {
+                    Debug.Log($"[MANAGER] Calling m_inferenceHUD.UpdateHUD with E2E={e2eMs:F0}ms, server={serverProcMs:F0}ms, parse={parseMs:F0}ms");
+                    m_inferenceHUD.UpdateHUD(
+                        e2eMs,
+                        networkMs / 2,  // uploadMs
+                        serverProcMs,
+                        networkMs / 2,  // downloadMs
+                        parseMs,
+                        0,  // uploadBytesCompressed
+                        0,  // downloadBytesUncompressed
+                        0,  // downloadBytesCompressed
+                        response.detections?.Length ?? 0,
+                        avgConfidence
+                    );
+                }
+                else
+                {
+                    Debug.LogWarning("[MANAGER] m_inferenceHUD is NULL, cannot update!");
+                }
             }
         }
 

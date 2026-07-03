@@ -1049,7 +1049,10 @@ namespace PassthroughCameraSamples.Segmentation
             // 2. Display segmentation results
             DisplayV3Frame(response);
 
-            // 3. Mark as displayed (this automatically writes to CSV)
+            // 3. Update HUD metrics (CRITICAL: Must be AFTER MarkFrameCompleted but ALWAYS called)
+            UpdateUIMetrics(response);
+
+            // 4. Mark as displayed (this automatically writes to CSV)
             m_telemetry.MarkFrameDisplayed(response.frame_id);
         }
 
@@ -1067,13 +1070,35 @@ namespace PassthroughCameraSamples.Segmentation
                 return;
             }
 
-            // Clear previous masks
-            m_uiInference.ClearAllMasks();
-
             // Get camera pose for rendering
             var cachedCameraPose = m_cameraAccess.GetCameraPose();
 
+            // Convert detections to UI format for bounding boxes
+            // Use normalized bbox (same as detection mode) and convert to pixel coordinates
+            m_detections.Clear();
+            foreach (var det in response.detections)
+            {
+                // Use normalized bbox and convert to pixels (same as detection mode)
+                if (det.bbox != null && det.bbox.Length == 4)
+                {
+                    // Convert normalized [0-1] coords to pixel coords
+                    float x1 = det.bbox[0] * response.input_image_width;
+                    float y1 = det.bbox[1] * response.input_image_height;
+                    float x2 = det.bbox[2] * response.input_image_width;
+                    float y2 = det.bbox[3] * response.input_image_height;
+
+                    Vector4 bboxUnity = new Vector4(x1, y1, x2, y2);
+                    m_detections.Add((det.class_id, bboxUnity));
+                }
+            }
+
+            // Draw bounding boxes (same as detection mode)
+            Vector2 inputSize = new Vector2(response.input_image_width, response.input_image_height);
+            m_uiInference.DrawUIBoxes(m_detections, inputSize, cachedCameraPose);
+
             // Render each detection's mask
+            // NOTE: Don't clear all masks here - let Update() cleanup old masks naturally
+            // This prevents flickering between frames
             int maskIndex = 0;
             int masksRendered = 0;
 
@@ -1124,86 +1149,80 @@ namespace PassthroughCameraSamples.Segmentation
 
             Debug.Log($"[V3 SEGMENTATION] Frame {response.frame_id}: Rendered {masksRendered} masks out of {response.detections.Length} detections");
 
-            // Update UI with metrics
-            UpdateUIMetrics(response);
+            // NOTE: UpdateUIMetrics is now called in HandleV3Response (always, regardless of detections)
         }
 
         /// <summary>
         /// Update UI components with inference metrics from FrameResponse.
+        /// Uses server-provided timing breakdown for accurate network time calculation.
         /// </summary>
         private void UpdateUIMetrics(FrameResponse response)
         {
-            float e2eMs = response.server_e2e_ms;
-            float uploadMs = 0f;  // Not tracked separately in V3
-            float serverProcMs = response.processing_time_ms;
-            float downloadMs = 0f;  // Not tracked separately in V3
-            float parseMs = 0f;  // Not tracked separately in V3
-            int uploadBytesCompressed = 0;  // Not available in response
-            int downloadBytesCompressed = 0;  // Not available in response
-            float avgConfidence = 0f;
-            int detectionCount = response.detections?.Length ?? 0;
+            Debug.Log($"[SEG MANAGER] UpdateUIMetrics called");
+            Debug.Log($"[SEG MANAGER] m_sharedHUD={(m_sharedHUD != null ? "Connected" : "NULL")}, m_inferenceHUD={(m_inferenceHUD != null ? "Connected" : "NULL")}, m_uiMenuManager={(m_uiMenuManager != null ? "Connected" : "NULL")}");
+            Debug.Log($"[SEG MANAGER] Response: E2E={response.latency_ms:F0}ms, server_e2e={response.server_e2e_ms:F0}ms, parse={response.parse_ms:F0}ms");
 
-            // Calculate average confidence from detections array
-            if (response.detections != null && response.detections.Length > 0)
-            {
-                float sum = 0f;
-                int count = 0;
-                foreach (var det in response.detections)
-                {
-                    sum += det.confidence;
-                    count++;
-                }
-                avgConfidence = count > 0 ? sum / count : 0f;
-            }
-
-            // Update metrics in the main info panel
-            if (m_uiMenuManager != null)
-            {
-                m_uiMenuManager.UpdateMetrics(
-                    e2eMs,
-                    uploadMs,
-                    serverProcMs,
-                    downloadMs,
-                    parseMs,
-                    uploadBytesCompressed,
-                    downloadBytesCompressed,
-                    avgConfidence
-                );
-            }
-
-            // Update real-time HUD overlay
-            if (m_inferenceHUD != null)
-            {
-                m_inferenceHUD.UpdateHUD(
-                    e2eMs,
-                    uploadMs,
-                    serverProcMs,
-                    downloadMs,
-                    parseMs,
-                    uploadBytesCompressed,
-                    0,  // downloadBytesUncompressed
-                    downloadBytesCompressed,
-                    detectionCount,
-                    avgConfidence
-                );
-            }
-
-            // Update SharedInferenceHUD with metrics
+            // SharedInferenceHUD now calculates metrics directly from FrameResponse
             if (m_sharedHUD != null)
             {
-                m_sharedHUD.UpdateMetrics(
-                    e2eMs,
-                    uploadMs,
-                    serverProcMs,
-                    downloadMs,
-                    parseMs,
-                    uploadBytesCompressed,
-                    0,  // downloadBytesUncompressed
-                    downloadBytesCompressed,
-                    detectionCount,
-                    avgConfidence,
-                    0f  // No keypoint confidence for segmentation mode
-                );
+                m_sharedHUD.UpdateMetrics(response);
+            }
+
+            // Legacy HUD updates (if still used)
+            if (m_uiMenuManager != null || m_inferenceHUD != null)
+            {
+                float e2eMs = response.latency_ms;
+                float serverE2eMs = response.server_e2e_ms;
+                float parseMs = response.parse_ms;
+                float networkMs = e2eMs - serverE2eMs - parseMs;  // Upload + Download
+                float serverProcMs = response.processing_time_ms;
+                float avgConfidence = 0f;
+                int detectionCount = response.detections?.Length ?? 0;
+
+                if (response.detections != null && response.detections.Length > 0)
+                {
+                    float sum = 0f;
+                    foreach (var det in response.detections)
+                    {
+                        sum += det.confidence;
+                    }
+                    avgConfidence = sum / response.detections.Length;
+                }
+
+                if (m_uiMenuManager != null)
+                {
+                    m_uiMenuManager.UpdateMetrics(
+                        e2eMs,
+                        networkMs / 2,  // uploadMs (approximation)
+                        serverProcMs,
+                        networkMs / 2,  // downloadMs (approximation)
+                        parseMs,
+                        0,  // uploadBytesCompressed
+                        0,  // downloadBytesCompressed
+                        avgConfidence
+                    );
+                }
+
+                if (m_inferenceHUD != null)
+                {
+                    Debug.Log($"[SEG MANAGER] Calling m_inferenceHUD.UpdateHUD with E2E={e2eMs:F0}ms, server={serverProcMs:F0}ms, parse={parseMs:F0}ms");
+                    m_inferenceHUD.UpdateHUD(
+                        e2eMs,
+                        networkMs / 2,  // uploadMs
+                        serverProcMs,
+                        networkMs / 2,  // downloadMs
+                        parseMs,
+                        0,  // uploadBytesCompressed
+                        0,  // downloadBytesUncompressed
+                        0,  // downloadBytesCompressed
+                        detectionCount,
+                        avgConfidence
+                    );
+                }
+                else
+                {
+                    Debug.LogWarning("[SEG MANAGER] m_inferenceHUD is NULL, cannot update!");
+                }
             }
         }
 
@@ -1340,23 +1359,8 @@ namespace PassthroughCameraSamples.Segmentation
                 );
             }
 
-            // Update SharedInferenceHUD with metrics
-            if (m_sharedHUD != null)
-            {
-                m_sharedHUD.UpdateMetrics(
-                    e2eMs,
-                    uploadMs,
-                    serverProcMs,
-                    downloadMs,
-                    parseMs,
-                    uploadBytesCompressed,
-                    downloadBytesUncompressed,
-                    downloadBytesCompressed,
-                    detectionCount,
-                    avgConfidence,
-                    0f  // No keypoint confidence for segmentation mode
-                );
-            }
+            // NOTE: SharedInferenceHUD update removed from legacy DisplayFrame method
+            // V3.0 uses DisplayV3Frame which calls UpdateUIMetrics(FrameResponse) instead
         }
 
         // V3.0: CleanupOldFrames(), CheckFrameTimeouts(), GetPerformanceMetrics() removed

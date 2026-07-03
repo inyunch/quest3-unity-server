@@ -148,6 +148,15 @@ namespace PassthroughCameraSamples.Shared
                 trace.upload_ms = networkMs / 2;  // Approximate split
                 trace.download_ms = networkMs / 2;
 
+                // CRITICAL FIX: Copy Unity-calculated timing back to response for HUD display
+                // The HUD uses response.latency_ms, which must match trace.e2e_ms (saved to Excel)
+                response.latency_ms = trace.e2e_ms;
+                response.upload_ms = trace.upload_ms;
+                response.download_ms = trace.download_ms;
+                // Note: response.parse_ms is already set during JSON parsing (or from server response)
+
+                Debug.Log($"[TELEMETRY] Copied timing to response: E2E={response.latency_ms:F1}ms, upload={response.upload_ms:F1}ms, download={response.download_ms:F1}ms, parse={response.parse_ms:F1}ms");
+
                 // Extract detection count for telemetry
                 if (response.HasDetections())
                 {

@@ -63,12 +63,15 @@ namespace PassthroughCameraSamples.Segmentation
         private void Update()
         {
             // Remove boxes that haven't been updated recently
+            // Match mask persistence time (1.0s) to ensure boxes and masks disappear together
+            // This prevents old bounding boxes from staying in mid-air when objects move
             for (int i = m_boxDrawn.Count - 1; i >= 0; i--)
             {
                 var box = m_boxDrawn[i];
-                const float timeToPersistBoxes = 3f;
+                const float timeToPersistBoxes = 1.0f;  // Changed from 3f to match masks
                 if (Time.time - box.lastUpdateTime > timeToPersistBoxes)
                 {
+                    Debug.Log($"[BOX CLEANUP] Removing old box, age={(Time.time - box.lastUpdateTime):F2}s");
                     ReturnToPool(box);
                     m_boxDrawn.RemoveAt(i);
                 }
@@ -78,10 +81,12 @@ namespace PassthroughCameraSamples.Segmentation
             for (int i = m_masksDrawn.Count - 1; i >= 0; i--)
             {
                 var mask = m_masksDrawn[i];
-                const float timeToPersistMasks = 0.2f;  // Very aggressive cleanup for point clouds
+                // Increased to 1.0s to prevent flickering between frames
+                // At 10 FPS target (~100ms intervals), masks should persist until next frame arrives
+                const float timeToPersistMasks = 1.0f;
                 if (Time.time - mask.lastUpdateTime > timeToPersistMasks)
                 {
-                    Debug.LogError($"[MASK CLEANUP] Removing old mask {mask.MaskId}, age={(Time.time - mask.lastUpdateTime):F2}s");
+                    Debug.Log($"[MASK CLEANUP] Removing old mask {mask.MaskId}, age={(Time.time - mask.lastUpdateTime):F2}s");
                     ReturnMaskToPool(mask);
                     m_masksDrawn.RemoveAt(i);
                 }

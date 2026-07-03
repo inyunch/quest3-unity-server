@@ -103,35 +103,60 @@ namespace PassthroughCameraSamples.Segmentation
         private void UpdateDisplay()
         {
             if (m_metricsText == null)
+            {
+                Debug.LogWarning("[HUD DISPLAY] m_metricsText is NULL!");
                 return;
+            }
 
-            // Calculate average FPS
+            // Get current timestamp with milliseconds
+            System.DateTime now = System.DateTime.Now;
+            string timestamp = now.ToString("yyyy-MM-dd HH:mm:ss.fff");
+
+            // Build simplified metrics string - ONLY TIMESTAMP AND E2E LATENCY
             float avgFPS = m_fpsHistory.Count > 0 ? m_fpsHistory.Average() : 0f;
-
-            Debug.Log($"[HUD DISPLAY] UpdateDisplay using: e2e={m_e2eMs:F1}ms, upload={m_uploadMs:F1}ms, server={m_serverProcMs:F1}ms, download={m_downloadMs:F1}ms, parse={m_parseMs:F1}ms");
-
-            // Calculate percentages
-            float uploadPct = m_e2eMs > 0 ? (m_uploadMs / m_e2eMs) * 100f : 0f;
-            float serverPct = m_e2eMs > 0 ? (m_serverProcMs / m_e2eMs) * 100f : 0f;
-            float downloadPct = m_e2eMs > 0 ? (m_downloadMs / m_e2eMs) * 100f : 0f;
-            float parsePct = m_e2eMs > 0 ? (m_parseMs / m_e2eMs) * 100f : 0f;
-
-            // Build metrics string with breakdown
-            string metricsStr = $"FPS: {avgFPS:F1}\n";
-            metricsStr += $"E2E: {m_e2eMs:F0}ms\n";
-            metricsStr += $" ?œUpload: {m_uploadMs:F0}ms ({uploadPct:F0}%)\n";
-            metricsStr += $" ?œServer: {m_serverProcMs:F0}ms ({serverPct:F0}%)\n";
-            metricsStr += $" ?œDownload: {m_downloadMs:F0}ms ({downloadPct:F0}%)\n";
-            metricsStr += $" ?”Parse: {m_parseMs:F0}ms ({parsePct:F0}%)\n";
-            metricsStr += $"Objects: {m_detectionCount}\n";
-            metricsStr += $"Avg Conf: {m_avgConfidence:F2}\n";
-
-            // Add upload/download sizes
-            metricsStr += $"Upload: {FormatBytes(m_uploadBytes)}\n";
-            metricsStr += $"Download: {FormatBytes(m_downloadBytes)}\n";
-            metricsStr += $"DL Compressed: {FormatBytes(m_downloadBytesCompressed)}";
+            float networkMs = Mathf.Max(0f, m_e2eMs - m_serverProcMs);
+            string metricsStr = $"<mark=#000000A0><size=150%><b>FPS:</b> <color=#FFFFFF>{avgFPS:F1}</color></size></mark>\n";
+            metricsStr += $"<mark=#000000A0><size=150%><b>E2E Latency:</b> <color=#00FF00>{m_e2eMs:F0}ms</color></size></mark>\n";
+            metricsStr += $"<mark=#000000A0><size=150%><b>Server:</b> <color=#FFFF00>{m_serverProcMs:F0}ms</color></size></mark>\n";
+            metricsStr += $"<mark=#000000A0><size=150%><b>Network:</b> <color=#00FFFF>{networkMs:F0}ms</color></size></mark>";
+            //string metricsStr = $"<b>Time:</b> {timestamp}\n\n";
+            //metricsStr += $"<b>E2E Latency:</b> <color=#00FF00>{m_e2eMs:F0}ms</color>";
 
             m_metricsText.text = metricsStr;
+
+            // Debug: Log every 30 frames to verify display is updating
+            if (Time.frameCount % 30 == 0)
+            {
+                Debug.Log($"[HUD DISPLAY] Showing E2E={m_e2eMs:F0}ms at {timestamp}");
+            }
+
+            // All other metrics commented out below:
+
+            // Calculate average FPS
+            // float avgFPS = m_fpsHistory.Count > 0 ? m_fpsHistory.Average() : 0f;
+
+            // Debug.Log($"[HUD DISPLAY] UpdateDisplay using: e2e={m_e2eMs:F1}ms, upload={m_uploadMs:F1}ms, server={m_serverProcMs:F1}ms, download={m_downloadMs:F1}ms, parse={m_parseMs:F1}ms");
+
+            // Calculate percentages
+            // float uploadPct = m_e2eMs > 0 ? (m_uploadMs / m_e2eMs) * 100f : 0f;
+            // float serverPct = m_e2eMs > 0 ? (m_serverProcMs / m_e2eMs) * 100f : 0f;
+            // float downloadPct = m_e2eMs > 0 ? (m_downloadMs / m_e2eMs) * 100f : 0f;
+            // float parsePct = m_e2eMs > 0 ? (m_parseMs / m_e2eMs) * 100f : 0f;
+
+            // Build metrics string with breakdown
+            // string metricsStr = $"FPS: {avgFPS:F1}\n";
+            // metricsStr += $"E2E: {m_e2eMs:F0}ms\n";
+            // metricsStr += $" ?ï¿½Upload: {m_uploadMs:F0}ms ({uploadPct:F0}%)\n";
+            // metricsStr += $" ?ï¿½Server: {m_serverProcMs:F0}ms ({serverPct:F0}%)\n";
+            // metricsStr += $" ?ï¿½Download: {m_downloadMs:F0}ms ({downloadPct:F0}%)\n";
+            // metricsStr += $" ?ï¿½Parse: {m_parseMs:F0}ms ({parsePct:F0}%)\n";
+            // metricsStr += $"Objects: {m_detectionCount}\n";
+            // metricsStr += $"Avg Conf: {m_avgConfidence:F2}\n";
+
+            // Add upload/download sizes
+            // metricsStr += $"Upload: {FormatBytes(m_uploadBytes)}\n";
+            // metricsStr += $"Download: {FormatBytes(m_downloadBytes)}\n";
+            // metricsStr += $"DL Compressed: {FormatBytes(m_downloadBytesCompressed)}";
         }
 
         private string FormatBytes(int bytes)

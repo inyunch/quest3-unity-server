@@ -482,11 +482,9 @@ namespace PassthroughCameraSamples.DepthEstimation
                     }
                 }
 
-                m_sharedHUD.UpdateMetrics(
-                    e2eMs, uploadMs, serverProcMs, downloadMs, parseMs,
-                    uploadBytes, uncompressedBytes, downloadBytes,
-                    numDetections, avgConfidence, avgKeypointConf
-                );
+                // NOTE: SharedInferenceHUD.UpdateMetrics now uses FrameResponse
+                // DepthEstimation mode is deprecated (use Quest native depth API instead)
+                // Legacy HUD update removed - use Segmentation or Pose modes for HUD display
             }
 
             // Store timing

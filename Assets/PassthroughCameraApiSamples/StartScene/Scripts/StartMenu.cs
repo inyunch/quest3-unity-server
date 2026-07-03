@@ -82,13 +82,13 @@ namespace PassthroughCameraSamples.StartScene
                     var sceneName = Path.GetFileNameWithoutExtension(scene.Item2);
                     // Friendly display names
                     if (sceneName.Contains("MultiObjectDetection"))
-                        sceneName = "Object Detection (10 FPS)";
+                        sceneName = "Object Detection";
                     else if (sceneName.Contains("PoseEstimation"))
-                        sceneName = "Pose Estimation (5 FPS)";
+                        sceneName = "Pose Estimation";
                     else if (sceneName.Contains("DepthEstimation"))
-                        sceneName = "Depth Estimation (5 FPS)";
+                        sceneName = "Depth Estimation";
                     else if (sceneName.Contains("Segmentation"))
-                        sceneName = "Segmentation (10 FPS)";
+                        sceneName = "Segmentation";
 
                     _ = uiBuilder.AddButton(sceneName, () => LoadScene(scene.Item1), -1, DebugUIBuilder.DEBUG_PANE_LEFT);
                 }

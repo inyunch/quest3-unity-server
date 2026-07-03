@@ -76,35 +76,67 @@ namespace PassthroughCameraSamples.Shared
         }
 
         /// <summary>
-        /// Update HUD with latest inference metrics including detailed latency breakdown.
+        /// Update HUD with latest inference metrics from FrameResponse.
+        /// Network time is calculated as: E2E - Server - Parse (directly from server timing).
         /// </summary>
-        public void UpdateMetrics(
-            float e2eMs,
-            float uploadMs,
-            float serverProcMs,
-            float downloadMs,
-            float parseMs,
-            int uploadBytes,
-            int downloadBytes,
-            int downloadBytesCompressed,
-            int detectionCount,
-            float avgConfidence,
-            float keypointAvgConf = 0f)
+        public void UpdateMetrics(FrameResponse response)
         {
-            m_e2eMs = e2eMs;
-            m_uploadMs = uploadMs;
-            m_serverProcMs = serverProcMs;
-            m_downloadMs = downloadMs;
-            m_parseMs = parseMs;
-            m_uploadBytes = uploadBytes;
-            m_downloadBytes = downloadBytes;
-            m_downloadBytesCompressed = downloadBytesCompressed;
-            m_detectionCount = detectionCount;
-            m_avgConfidence = avgConfidence;
-            m_keypointAvgConf = keypointAvgConf;
+            // Use server-provided timing breakdown
+            m_e2eMs = response.latency_ms;  // Total E2E (Unity → Server → Unity)
+            float serverE2eMs = response.server_e2e_ms;  // Queue + Processing
+            m_parseMs = response.parse_ms;  // JSON parse time
+
+            // Calculate network time = E2E - Server - Parse
+            // This gives us Upload + Download time directly from server timestamps
+            float networkMs = m_e2eMs - serverE2eMs - m_parseMs;
+            m_uploadMs = networkMs / 2;  // Approximate split (not used in display)
+            m_downloadMs = networkMs / 2;  // Approximate split (not used in display)
+
+            m_serverProcMs = response.processing_time_ms;  // Actual inference time
+
+            // Detection metrics
+            m_detectionCount = response.detections?.Length ?? 0;
+
+            // Calculate average confidence
+            if (response.detections != null && response.detections.Length > 0)
+            {
+                float sum = 0f;
+                foreach (var det in response.detections)
+                {
+                    sum += det.confidence;
+                }
+                m_avgConfidence = sum / response.detections.Length;
+            }
+            else
+            {
+                m_avgConfidence = 0f;
+            }
+
+            // Keypoint confidence (for pose mode)
+            if (response.persons != null && response.persons.Length > 0)
+            {
+                float sum = 0f;
+                int count = 0;
+                foreach (var person in response.persons)
+                {
+                    if (person.keypoints != null)
+                    {
+                        foreach (var kp in person.keypoints)
+                        {
+                            sum += kp.score;
+                            count++;
+                        }
+                    }
+                }
+                m_keypointAvgConf = count > 0 ? sum / count : 0f;
+            }
+            else
+            {
+                m_keypointAvgConf = 0f;
+            }
 
             // Calculate actual inference FPS (NOT Unity rendering FPS!)
-            float inferenceFPS = e2eMs > 0 ? 1000f / e2eMs : 0f;
+            float inferenceFPS = m_e2eMs > 0 ? 1000f / m_e2eMs : 0f;
             m_inferenceFpsHistory.Enqueue(inferenceFPS);
 
             // Keep only the last N samples
@@ -165,53 +197,69 @@ namespace PassthroughCameraSamples.Shared
         private void UpdateDisplay()
         {
             if (m_metricsText == null)
+            {
+                Debug.LogWarning("[SharedHUD DISPLAY] m_metricsText is NULL!");
                 return;
+            }
+
+            // Get current timestamp with milliseconds
+            System.DateTime now = System.DateTime.Now;
+            string timestamp = now.ToString("yyyy-MM-dd HH:mm:ss.fff");
+
+            // Build simplified metrics string - ONLY TIMESTAMP AND E2E LATENCY
+            string metricsStr = $"<b>Time:</b> {timestamp}\n\n";
+            metricsStr += $"<b>E2E Latency:</b> <color=#00FF00>{m_e2eMs:F0}ms</color>";
+
+            m_metricsText.text = metricsStr;
+
+            // Debug: Log every 30 frames to verify display is updating
+            if (Time.frameCount % 30 == 0)
+            {
+                Debug.Log($"[SharedHUD DISPLAY] Showing E2E={m_e2eMs:F0}ms at {timestamp}");
+            }
+
+            // All other metrics commented out below:
 
             // Calculate average INFERENCE FPS (NOT rendering FPS!)
-            float avgInferenceFPS = m_inferenceFpsHistory.Count > 0 ? m_inferenceFpsHistory.Average() : 0f;
+            // float avgInferenceFPS = m_inferenceFpsHistory.Count > 0 ? m_inferenceFpsHistory.Average() : 0f;
 
             // Calculate session duration
-            float sessionDuration = Time.time - m_sessionStartTime;
+            // float sessionDuration = Time.time - m_sessionStartTime;
 
             // Calculate network time (upload + download)
-            float networkMs = m_uploadMs + m_downloadMs;
+            // float networkMs = m_uploadMs + m_downloadMs;
 
-            // Build simplified metrics string
-            string metricsStr = $"<b>{m_currentMode}</b>\n";
-            metricsStr += $"<color=#00FF00>FPS: {avgInferenceFPS:F1}</color> (target: {m_targetFPS:F1})\n\n";
+            // Mode name
+            // string metricsStr = $"<b>{m_currentMode}</b>\n";
+            // metricsStr += $"<color=#00FF00>FPS: {avgInferenceFPS:F1}</color> (target: {m_targetFPS:F1})\n\n";
 
-            // Time metrics (simplified)
-            metricsStr += $"<b>Time (ms)</b>\n";
-            metricsStr += $"E2E: {m_e2eMs:F0}ms\n";
-            metricsStr += $"Network: {networkMs:F0}ms\n\n";
+            // Network time
+            // metricsStr += $"Network: {networkMs:F0}ms\n\n";
 
-            // Detection metrics
-            metricsStr += $"<b>Detection</b>\n";
-            metricsStr += $"Count: {m_detectionCount}\n";
+            // Detection metrics (commented out)
+            // metricsStr += $"<b>Detection</b>\n";
+            // metricsStr += $"Count: {m_detectionCount}\n";
+            // if (m_avgConfidence > 0f)
+            // {
+            //     metricsStr += $"Conf: {m_avgConfidence:F2}\n";
+            // }
+            // if (m_keypointAvgConf > 0f)
+            // {
+            //     metricsStr += $"Keypoint: {m_keypointAvgConf:F2}\n";
+            // }
 
-            if (m_avgConfidence > 0f)
-            {
-                metricsStr += $"Conf: {m_avgConfidence:F2}\n";
-            }
-
-            if (m_keypointAvgConf > 0f)
-            {
-                metricsStr += $"Keypoint: {m_keypointAvgConf:F2}\n";
-            }
-
-            // Frame statistics
-            metricsStr += $"\n<b>Frames</b> ({sessionDuration:F0}s)\n";
-            metricsStr += $"Total: {m_totalFrames}\n";
-
-            if (m_droppedFrames > 0 || m_frozenFrames > 0)
-            {
-                metricsStr += $"<color=#FFAA00>Dropped: {m_droppedFrames}</color>\n";
-                metricsStr += $"<color=#FFAA00>Frozen: {m_frozenFrames}</color>";
-            }
-            else
-            {
-                metricsStr += $"Dropped: 0\nFrozen: 0";
-            }
+            // Frame statistics (commented out)
+            // metricsStr += $"\n<b>Frames</b> ({sessionDuration:F0}s)\n";
+            // metricsStr += $"Total: {m_totalFrames}\n";
+            // if (m_droppedFrames > 0 || m_frozenFrames > 0)
+            // {
+            //     metricsStr += $"<color=#FFAA00>Dropped: {m_droppedFrames}</color>\n";
+            //     metricsStr += $"<color=#FFAA00>Frozen: {m_frozenFrames}</color>";
+            // }
+            // else
+            // {
+            //     metricsStr += $"Dropped: 0\nFrozen: 0";
+            // }
 
             m_metricsText.text = metricsStr;
         }

@@ -416,7 +416,7 @@ MonoBehaviour:
   m_GameObject: {fileID: 230268727}
   m_Enabled: 1
   m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: e5d30862f49de2640a32dd34a595bd40, type: 3}
+  m_Script: {fileID: 11500000, guid: 155dc214afe146d4fa98603a08bc2c17, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
   m_metricsText: {fileID: 2132308195}
@@ -460,7 +460,7 @@ MonoBehaviour:
   m_FallbackScreenDPI: 96
   m_DefaultSpriteDPI: 96
   m_DynamicPixelsPerUnit: 1
-  m_PresetInfoIsWorld: 0
+  m_PresetInfoIsWorld: 1
 --- !u!223 &230268731
 Canvas:
   m_ObjectHideFlags: 0
@@ -501,7 +501,7 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.5, y: 0.5}
   m_AnchorMax: {x: 0.5, y: 0.5}
-  m_AnchoredPosition: {x: 0, y: 0.05}
+  m_AnchoredPosition: {x: -0.15, y: -0.07}
   m_SizeDelta: {x: 100, y: 100}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!1 &256469435
@@ -2377,6 +2377,10 @@ PrefabInstance:
       value: 
       objectReference: {fileID: 6846995557286463107}
     - target: {fileID: 2681575481727882275, guid: c9740e6c6f47fd442b765d80a969c45b, type: 3}
+      propertyPath: m_backend
+      value: 256
+      objectReference: {fileID: 0}
+    - target: {fileID: 2681575481727882275, guid: c9740e6c6f47fd442b765d80a969c45b, type: 3}
       propertyPath: m_serverUrl
       value: 
       objectReference: {fileID: 0}
@@ -2391,7 +2395,7 @@ PrefabInstance:
     - target: {fileID: 2681575481727882275, guid: c9740e6c6f47fd442b765d80a969c45b, type: 3}
       propertyPath: m_inferenceHUD
       value: 
-      objectReference: {fileID: 0}
+      objectReference: {fileID: 230268728}
     - target: {fileID: 2681575481727882275, guid: c9740e6c6f47fd442b765d80a969c45b, type: 3}
       propertyPath: m_uiMenuManager
       value: 
@@ -2410,7 +2414,7 @@ PrefabInstance:
       objectReference: {fileID: 1542092273}
     - target: {fileID: 2681575481727882275, guid: c9740e6c6f47fd442b765d80a969c45b, type: 3}
       propertyPath: m_inferenceConfig.targetFPS
-      value: 20
+      value: 10
       objectReference: {fileID: 0}
     - target: {fileID: 2681575481727882275, guid: c9740e6c6f47fd442b765d80a969c45b, type: 3}
       propertyPath: m_inferenceConfig.jpegQuality
