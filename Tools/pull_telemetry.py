@@ -68,14 +68,26 @@ def check_device():
     return True
 
 def list_remote_files():
-    """List telemetry files on Quest"""
+    """List telemetry and epoch files on Quest"""
     print_color("Checking for telemetry files on Quest...", Colors.YELLOW)
 
-    cmd = ["adb", "shell", "ls", "-lh", f"{APP_PRIVATE_PATH}telemetry_*.csv"]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    files = []
+    any_output = False
+    for pattern in ["telemetry_*.csv", "epoch_*.csv"]:
+        cmd = ["adb", "shell", "ls", "-lh", f"{APP_PRIVATE_PATH}{pattern}"]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0 and result.stdout.strip():
+            any_output = True
+            print(result.stdout)
+            keyword = "telemetry_" if "telemetry" in pattern else "epoch_"
+            for line in result.stdout.split("\n"):
+                if keyword in line:
+                    parts = line.split()
+                    if len(parts) > 0:
+                        files.append(parts[-1])
 
-    if result.returncode != 0 or "No such file" in result.stderr:
-        print_color("No telemetry files found on Quest.", Colors.RED)
+    if not files:
+        print_color("No telemetry or epoch files found on Quest.", Colors.RED)
         print()
         print_color("Make sure:", Colors.YELLOW)
         print_color("  1. App has been run on Quest", Colors.YELLOW)
@@ -86,21 +98,8 @@ def list_remote_files():
         print_color("  adb logcat -s Unity | grep 'TELEMETRY'", Colors.CYAN)
         return []
 
-    print_color("Available files on Quest:", Colors.GREEN)
-    print(result.stdout)
-
-    # Extract filenames
-    files = []
-    for line in result.stdout.split("\n"):
-        if "telemetry_" in line:
-            parts = line.split()
-            if len(parts) > 0:
-                filename = parts[-1]  # Last column is filename
-                files.append(filename)
-
-    print_color(f"Found {len(files)} telemetry file(s)", Colors.GREEN)
+    print_color(f"Found {len(files)} file(s) on Quest", Colors.GREEN)
     print()
-
     return files
 
 def copy_to_public():

@@ -17,10 +17,8 @@ namespace PassthroughCameraSamples.Shared
     {
         [Header("UI References")]
         [SerializeField] private TextMeshProUGUI m_metricsText;
-        [SerializeField] private bool m_showDetailedMetrics = true;
-
         [Header("FPS Calculation")]
-        [SerializeField] private int m_fpsAverageSamples = 10;  // Use fewer samples for inference FPS
+        [SerializeField] private int m_fpsAverageSamples = 10;
 
         // FPS history for averaging
         private Queue<float> m_inferenceFpsHistory = new Queue<float>();
