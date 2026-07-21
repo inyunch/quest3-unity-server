@@ -238,56 +238,8 @@ namespace PassthroughCameraSamples.Shared
 
             m_metricsText.text = metricsStr;
 
-            // Debug: Log every 30 frames to verify display is updating
             if (Time.frameCount % 30 == 0)
-            {
                 Debug.Log($"[SharedHUD DISPLAY] Showing E2E={m_e2eMs:F0}ms at {timestamp}");
-            }
-
-            // All other metrics commented out below:
-
-            // Calculate average INFERENCE FPS (NOT rendering FPS!)
-            // float avgInferenceFPS = m_inferenceFpsHistory.Count > 0 ? m_inferenceFpsHistory.Average() : 0f;
-
-            // Calculate session duration
-            // float sessionDuration = Time.time - m_sessionStartTime;
-
-            // Calculate network time (upload + download)
-            // float networkMs = m_uploadMs + m_downloadMs;
-
-            // Mode name
-            // string metricsStr = $"<b>{m_currentMode}</b>\n";
-            // metricsStr += $"<color=#00FF00>FPS: {avgInferenceFPS:F1}</color> (target: {m_targetFPS:F1})\n\n";
-
-            // Network time
-            // metricsStr += $"Network: {networkMs:F0}ms\n\n";
-
-            // Detection metrics (commented out)
-            // metricsStr += $"<b>Detection</b>\n";
-            // metricsStr += $"Count: {m_detectionCount}\n";
-            // if (m_avgConfidence > 0f)
-            // {
-            //     metricsStr += $"Conf: {m_avgConfidence:F2}\n";
-            // }
-            // if (m_keypointAvgConf > 0f)
-            // {
-            //     metricsStr += $"Keypoint: {m_keypointAvgConf:F2}\n";
-            // }
-
-            // Frame statistics (commented out)
-            // metricsStr += $"\n<b>Frames</b> ({sessionDuration:F0}s)\n";
-            // metricsStr += $"Total: {m_totalFrames}\n";
-            // if (m_droppedFrames > 0 || m_frozenFrames > 0)
-            // {
-            //     metricsStr += $"<color=#FFAA00>Dropped: {m_droppedFrames}</color>\n";
-            //     metricsStr += $"<color=#FFAA00>Frozen: {m_frozenFrames}</color>";
-            // }
-            // else
-            // {
-            //     metricsStr += $"Dropped: 0\nFrozen: 0";
-            // }
-
-            m_metricsText.text = metricsStr;
         }
 
         private string FormatBytes(int bytes)

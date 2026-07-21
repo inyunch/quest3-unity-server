@@ -2,6 +2,7 @@
 
 using System.Collections;
 using UnityEngine;
+using PassthroughCameraSamples.Demo;
 
 namespace PassthroughCameraSamples.Shared.ControlPlane
 {
@@ -42,27 +43,23 @@ namespace PassthroughCameraSamples.Shared.ControlPlane
 
         // ── Lifecycle ─────────────────────────────────────────────────────────
 
-        private void Start()
+        private IEnumerator Start()
         {
             var manager = GetComponent<V3Demo_SimplifiedInferenceManager>();
             if (manager == null)
             {
                 Debug.LogError("[RUNTIME CTRL] V3Demo_SimplifiedInferenceManager not found on this GameObject");
                 enabled = false;
-                return;
+                yield break;
             }
 
-            m_knobs   = manager.Knobs;
-            m_metrics = manager.Metrics;
+            // V3Demo.Start() is a coroutine — wait until Knobs/Metrics are initialized
+            // (they are set before the first yield in that coroutine, but Start() call order is not guaranteed)
+            yield return new WaitUntil(() => manager.Knobs != null);
+
+            m_knobs     = manager.Knobs;
+            m_metrics   = manager.Metrics;
             m_sessionId = manager.SessionId;
-
-            if (m_knobs == null || m_metrics == null)
-            {
-                Debug.LogError("[RUNTIME CTRL] Manager not yet initialized (Knobs or Metrics null). " +
-                               "Ensure RuntimeController.Start runs after the manager's Start.");
-                enabled = false;
-                return;
-            }
 
             // Apply initial profile
             m_knobs.Apply(OperatingProfile.Get(m_initialProfileId));

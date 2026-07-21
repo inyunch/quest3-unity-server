@@ -11,13 +11,12 @@ namespace PassthroughCameraSamples.Demo
     /// <summary>
     /// V3.0 Architecture Demo: Simplified Inference Manager
     ///
-    /// Changed in control-plane integration:
+    /// Control-plane integration:
     ///   P1: InvokeRepeating → coroutine loop that re-reads TargetFps from ControlKnobs each cycle.
     ///   P2: N gate (InflightCap), MetricsAggregator, render-age sampler in Update().
     ///       Downsample via RenderTexture when profile.ResFactor &lt; 1.
     ///
-    /// When no RuntimeController is attached, the manager creates ControlKnobs from its
-    /// serialized fields (m_initialProfileId) and runs indefinitely at that profile.
+    /// Standalone: runs at m_initialProfileId profile indefinitely.
     /// Add RuntimeController to this GameObject to enable adaptive policies.
     /// </summary>
     public class V3Demo_SimplifiedInferenceManager : MonoBehaviour
@@ -27,11 +26,6 @@ namespace PassthroughCameraSamples.Demo
         // ====================================================================
         [Header("Camera")]
         [SerializeField] private PassthroughCameraAccess m_cameraAccess;
-
-        [Header("Inference Settings (used as fallback when no ControlPlane is active)")]
-        [SerializeField] private float m_targetFPS = 5f;
-        [SerializeField] private int m_jpegQuality = 80;
-        [SerializeField] private InferenceMode m_mode = InferenceMode.Segmentation;
 
         [Header("Control Plane")]
         [Tooltip("Initial OperatingProfile id. Valid values: P1, P2, P3, P4, P5. " +
@@ -83,20 +77,14 @@ namespace PassthroughCameraSamples.Demo
             m_sessionId = System.Guid.NewGuid().ToString();
             Debug.Log($"[V3 DEMO] Session ID: {m_sessionId}");
 
-            // Initialize ControlKnobs from serialized fallback values
-            // RuntimeController (if attached) will call knobs.Apply() later in its own Start().
-            var fallbackProfile = new OperatingProfile(
-                id: m_initialProfileId,
-                resFactor: 1.0f,
-                jpegQuality: m_jpegQuality,
-                targetFps: m_targetFPS,
-                inflightCap: 4
-            );
-            // Prefer a named profile from the table; use the serialized custom one only as a last resort
-            var namedProfile = OperatingProfile.Get(m_initialProfileId);
-            m_knobs = new ControlKnobs(
-                (namedProfile != null && namedProfile.Id == m_initialProfileId)
-                    ? namedProfile : fallbackProfile);
+            // Initialize ControlKnobs from table profile; RuntimeController (if present) may override.
+            var initialProfile = OperatingProfile.Get(m_initialProfileId);
+            if (initialProfile == null)
+            {
+                Debug.LogWarning($"[V3 DEMO] Unknown profile id '{m_initialProfileId}', defaulting to P3");
+                initialProfile = OperatingProfile.Get("P3");
+            }
+            m_knobs = new ControlKnobs(initialProfile);
 
             // MetricsAggregator queries pending count from the telemetry tracker (built below)
             m_metrics = new MetricsAggregator(() => m_telemetry?.GetPendingCount() ?? 0);
@@ -247,14 +235,14 @@ namespace PassthroughCameraSamples.Demo
 
                 // 3. JPEG encode at profile quality
                 byte[] jpegData = toEncode.EncodeToJPG(profile.JpegQuality);
+                int rawBytes = toEncode.width * toEncode.height * 3;  // capture before Destroy
                 Destroy(frame);
                 if (didResize) Destroy(toEncode);
 
                 // 4. Create frame trace (stamped with profile + policy info)
                 FrameTrace trace = m_telemetry.CreateFrame(
                     m_frameId, jpegData.Length, profile, policyId: "");
-                trace.upload_bytes_uncompressed =
-                    toEncode.width * toEncode.height * 3;
+                trace.upload_bytes_uncompressed = rawBytes;
 
                 // 5. Send via UDP (non-blocking)
                 m_transport.SendFrame(trace, jpegData, telemetryJson: null);
