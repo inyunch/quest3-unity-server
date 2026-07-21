@@ -2,6 +2,7 @@
 
 using System.Collections;
 using PassthroughCameraSamples.Shared;
+using PassthroughCameraSamples.Shared.ControlPlane;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -10,23 +11,14 @@ namespace PassthroughCameraSamples.Demo
     /// <summary>
     /// V3.0 Architecture Demo: Simplified Inference Manager
     ///
-    /// This is a minimal example showing how to use the new OOP components:
-    /// - UDPTransportManager: Bidirectional UDP communication
-    /// - FrameTelemetryTracker: Frame state tracking + CSV logging
-    /// - FrameResponse: Unified response format
+    /// Changed in control-plane integration:
+    ///   P1: InvokeRepeating → coroutine loop that re-reads TargetFps from ControlKnobs each cycle.
+    ///   P2: N gate (InflightCap), MetricsAggregator, render-age sampler in Update().
+    ///       Downsample via RenderTexture when profile.ResFactor &lt; 1.
     ///
-    /// Benefits over old architecture:
-    /// - NO HTTP polling (pure UDP)
-    /// - NO N+1 delayed telemetry (instant CSV writes)
-    /// - ~150 lines vs 1000+ lines
-    /// - Clean separation of concerns
-    /// - Zero blocking operations
-    ///
-    /// Usage:
-    /// 1. Attach to GameObject in scene
-    /// 2. Assign PassthroughCameraAccess reference
-    /// 3. Configure server IP in ServerConfig asset
-    /// 4. Run and watch console logs
+    /// When no RuntimeController is attached, the manager creates ControlKnobs from its
+    /// serialized fields (m_initialProfileId) and runs indefinitely at that profile.
+    /// Add RuntimeController to this GameObject to enable adaptive policies.
     /// </summary>
     public class V3Demo_SimplifiedInferenceManager : MonoBehaviour
     {
@@ -36,19 +28,27 @@ namespace PassthroughCameraSamples.Demo
         [Header("Camera")]
         [SerializeField] private PassthroughCameraAccess m_cameraAccess;
 
-        [Header("Inference Settings")]
+        [Header("Inference Settings (used as fallback when no ControlPlane is active)")]
         [SerializeField] private float m_targetFPS = 5f;
         [SerializeField] private int m_jpegQuality = 80;
         [SerializeField] private InferenceMode m_mode = InferenceMode.Segmentation;
 
+        [Header("Control Plane")]
+        [Tooltip("Initial OperatingProfile id. Valid values: P1, P2, P3, P4, P5. " +
+                 "The RuntimeController (if present) will override this at Start.")]
+        [SerializeField] private string m_initialProfileId = "P3";
+
         [Header("Debug UI (Optional)")]
         [SerializeField] private Text m_statusText;
+        [SerializeField] private SharedInferenceHUD m_sharedHUD;
 
         // ====================================================================
         // V3.0 OOP Components
         // ====================================================================
         private UDPTransportManager m_transport;
         private FrameTelemetryTracker m_telemetry;
+        private ControlKnobs m_knobs;
+        private MetricsAggregator m_metrics;
 
         // ====================================================================
         // State
@@ -56,36 +56,61 @@ namespace PassthroughCameraSamples.Demo
         private string m_sessionId;
         private int m_frameId = 0;
         private bool m_isInitialized = false;
+        private Coroutine m_sendLoop;
 
         // ====================================================================
         // Statistics
         // ====================================================================
-        private int m_framesSent = 0;
+        private int m_framesSent      = 0;
         private int m_responsesReceived = 0;
+        private int m_nGateDrops      = 0;
 
-        /// <summary>
-        /// Initialize V3.0 components
-        /// </summary>
+        // ====================================================================
+        // Public API for RuntimeController (P4)
+        // ====================================================================
+        public ControlKnobs Knobs    => m_knobs;
+        public MetricsAggregator Metrics => m_metrics;
+        public string SessionId      => m_sessionId;
+
+        // ── Lifecycle ─────────────────────────────────────────────────────────
+
         private IEnumerator Start()
         {
             Debug.Log("[V3 DEMO] ========================================");
-            Debug.Log("[V3 DEMO] Simplified Inference Manager (V3.0)");
+            Debug.Log("[V3 DEMO] Simplified Inference Manager (V3.0 + Control Plane)");
             Debug.Log("[V3 DEMO] ========================================");
 
-            // 1. Generate session ID
             m_sessionId = System.Guid.NewGuid().ToString();
             Debug.Log($"[V3 DEMO] Session ID: {m_sessionId}");
 
-            // 2. Initialize UDP Transport Manager
+            // Initialize ControlKnobs from serialized fallback values
+            // RuntimeController (if attached) will call knobs.Apply() later in its own Start().
+            var fallbackProfile = new OperatingProfile(
+                id: m_initialProfileId,
+                resFactor: 1.0f,
+                jpegQuality: m_jpegQuality,
+                targetFps: m_targetFPS,
+                inflightCap: 4
+            );
+            // Prefer a named profile from the table; use the serialized custom one only as a last resort
+            var namedProfile = OperatingProfile.Get(m_initialProfileId);
+            m_knobs = new ControlKnobs(
+                (namedProfile != null && namedProfile.Id == m_initialProfileId)
+                    ? namedProfile : fallbackProfile);
+
+            // MetricsAggregator queries pending count from the telemetry tracker (built below)
+            m_metrics = new MetricsAggregator(() => m_telemetry?.GetPendingCount() ?? 0);
+
+            // UDP Transport
             try
             {
                 m_transport = new UDPTransportManager(
-                    serverIP: ServerConfig.Instance.ServerIP,
-                    sendPort: 8002,
+                    serverIP:    ServerConfig.Instance.ServerIP,
+                    sendPort:    8002,
                     receivePort: 8003
                 );
                 m_transport.Initialize();
-                Debug.Log($"[V3 DEMO] UDP Transport initialized");
+                Debug.Log("[V3 DEMO] UDP Transport initialized");
             }
             catch (System.Exception e)
             {
@@ -93,96 +118,155 @@ namespace PassthroughCameraSamples.Demo
                 yield break;
             }
 
-            // 3. Initialize Telemetry Tracker
+            // Telemetry Tracker
             m_telemetry = new FrameTelemetryTracker(
                 sessionId: m_sessionId,
                 sceneName: "V3Demo",
                 enableLocalTelemetry: true
             );
-            Debug.Log($"[V3 DEMO] Telemetry tracker initialized");
+            Debug.Log("[V3 DEMO] Telemetry tracker initialized");
 
-            // 4. Wait for camera to be ready
-            Debug.Log($"[V3 DEMO] Waiting for camera...");
+            // Wait for camera
+            Debug.Log("[V3 DEMO] Waiting for camera...");
             float startTime = Time.time;
             while (!m_cameraAccess.IsPlaying && (Time.time - startTime) < 10f)
-            {
                 yield return new WaitForSeconds(0.5f);
-            }
 
             if (!m_cameraAccess.IsPlaying)
             {
-                Debug.LogError($"[V3 DEMO] Camera failed to start after 10 seconds");
+                Debug.LogError("[V3 DEMO] Camera failed to start after 10 seconds");
                 yield break;
             }
-
             Debug.Log($"[V3 DEMO] Camera ready after {Time.time - startTime:F1}s");
 
-            // 5. Start inference loop
             m_isInitialized = true;
-            InvokeRepeating(nameof(SendNextFrame), 0f, 1f / m_targetFPS);
+            m_sendLoop = StartCoroutine(SendLoop());
 
-            Debug.Log($"[V3 DEMO] Initialization complete, sending at {m_targetFPS} FPS");
+            Debug.Log($"[V3 DEMO] Initialized. profile={m_knobs.CurrentProfile.Id}, " +
+                      $"fps={m_knobs.CurrentProfile.TargetFps}");
         }
 
-        /// <summary>
-        /// Main update loop - poll for UDP responses
-        /// </summary>
+        private void OnDestroy()
+        {
+            if (m_sendLoop != null) StopCoroutine(m_sendLoop);
+            m_transport?.Shutdown();
+            m_telemetry?.Shutdown();
+            Debug.Log($"[V3 DEMO] Final stats: Sent={m_framesSent}, " +
+                      $"Received={m_responsesReceived}, N-gate drops={m_nGateDrops}");
+        }
+
+        // ── Send loop (P1: dynamic pacing) ───────────────────────────────────
+
+        private IEnumerator SendLoop()
+        {
+            while (true)
+            {
+                SendNextFrame();
+                float interval = 1f / Mathf.Max(0.1f, m_knobs.CurrentProfile.TargetFps);
+                yield return new WaitForSeconds(interval);
+            }
+        }
+
+        // ── Update loop ───────────────────────────────────────────────────────
+
         private void Update()
         {
-            if (!m_isInitialized)
-                return;
+            if (!m_isInitialized) return;
 
-            // Poll for UDP responses (non-blocking!)
+            // Drain UDP response queue
             while (m_transport.TryGetResponse(out FrameResponse response))
-            {
                 HandleResponse(response);
-            }
 
-            // Periodic telemetry cleanup
-            if (Time.frameCount % 300 == 0)
+            // Age sampler (P2): A_r = now − unity_send_ts of currently displayed frame
+            int displayedId = m_telemetry.GetLastDisplayedFrameId();
+            if (displayedId >= 0)
             {
-                m_telemetry.CleanupOldTraces();
+                FrameTrace displayedTrace = m_telemetry.GetTrace(displayedId);
+                if (displayedTrace != null && displayedTrace.unity_send_ts > 0)
+                {
+                    float ageMs = TimestampUtil.GetUnixTimestampMs() - displayedTrace.unity_send_ts;
+                    m_metrics.PushAge(ageMs);
+                }
             }
 
-            // Update debug UI
+            // HUD: update control-plane metrics every frame (cheap)
+            if (m_sharedHUD != null)
+            {
+                var snap = m_metrics.Snapshot();
+                m_sharedHUD.UpdateControlPlaneMetrics(snap, m_knobs.CurrentProfile.Id);
+            }
+
+            // Cleanup & debug UI
+            if (Time.frameCount % 300 == 0)
+                m_telemetry.CleanupOldTraces();
+
             UpdateStatusUI();
+
+#if UNITY_EDITOR
+            DebugProfileSwitch();
+#endif
         }
 
-        /// <summary>
-        /// Send next inference frame (called via InvokeRepeating)
-        /// </summary>
+        // ── Frame send (P1 + P2) ─────────────────────────────────────────────
+
         private void SendNextFrame()
         {
-            if (!m_isInitialized || !m_cameraAccess.IsPlaying)
+            if (!m_isInitialized || !m_cameraAccess.IsPlaying) return;
+
+            OperatingProfile profile = m_knobs.CurrentProfile;
+
+            // N gate (P2): skip if too many frames are already in-flight
+            int pending = m_telemetry.GetPendingCount();
+            if (pending >= profile.InflightCap)
+            {
+                m_nGateDrops++;
+                m_metrics.RecordDropped();
+                Debug.Log($"[V3 DEMO] N gate: pending={pending} >= cap={profile.InflightCap}, " +
+                          $"total_gate_drops={m_nGateDrops}");
                 return;
+            }
 
             try
             {
-                // 1. Capture frame from camera
+                // 1. Capture
                 Texture2D frame = CaptureFrame();
                 if (frame == null)
                 {
-                    Debug.LogWarning($"[V3 DEMO] Failed to capture frame");
+                    Debug.LogWarning("[V3 DEMO] Failed to capture frame");
                     return;
                 }
 
-                // 2. Encode to JPEG
-                byte[] jpegData = frame.EncodeToJPG(m_jpegQuality);
-                Destroy(frame);  // Clean up texture
+                // 2. Resize (P1) — only if profile.ResFactor < 1
+                Texture2D toEncode = frame;
+                bool didResize = false;
+                if (profile.ResFactor < 0.99f)
+                {
+                    toEncode  = ResizeTexture(frame, profile.ResFactor);
+                    didResize = true;
+                }
 
-                // 3. Create frame trace
-                FrameTrace trace = m_telemetry.CreateFrame(m_frameId, jpegData.Length);
-                trace.upload_bytes_uncompressed = m_cameraAccess.ImageWidth * m_cameraAccess.ImageHeight * 3;
+                // 3. JPEG encode at profile quality
+                byte[] jpegData = toEncode.EncodeToJPG(profile.JpegQuality);
+                Destroy(frame);
+                if (didResize) Destroy(toEncode);
 
-                // 4. Send via UDP (NON-BLOCKING!)
+                // 4. Create frame trace (stamped with profile + policy info)
+                FrameTrace trace = m_telemetry.CreateFrame(
+                    m_frameId, jpegData.Length, profile, policyId: "");
+                trace.upload_bytes_uncompressed =
+                    toEncode.width * toEncode.height * 3;
+
+                // 5. Send via UDP (non-blocking)
                 m_transport.SendFrame(trace, jpegData, telemetryJson: null);
 
+                m_metrics.RecordSent();
+                m_metrics.PushBytes(jpegData.Length);
                 m_framesSent++;
                 m_frameId++;
 
-                Debug.Log($"[V3 DEMO] Sent frame {trace.frame_id}, " +
-                          $"size={jpegData.Length / 1024}KB, " +
-                          $"total_sent={m_framesSent}");
+                Debug.Log($"[V3 DEMO] Sent frame {trace.frame_id} " +
+                          $"({profile.ResWidth}×{profile.ResHeight}, " +
+                          $"q={profile.JpegQuality}, size={jpegData.Length / 1024}KB)");
             }
             catch (System.Exception e)
             {
@@ -190,83 +274,90 @@ namespace PassthroughCameraSamples.Demo
             }
         }
 
-        /// <summary>
-        /// Handle received inference response
-        /// </summary>
+        // ── Response handling ─────────────────────────────────────────────────
+
         private void HandleResponse(FrameResponse response)
         {
             m_responsesReceived++;
-
-            Debug.Log($"[V3 DEMO] Received response for frame {response.frame_id}, " +
+            Debug.Log($"[V3 DEMO] Received frame {response.frame_id}, " +
                       $"server_proc={response.processing_time_ms:F1}ms, " +
-                      $"queue_wait={response.queue_wait_ms:F1}ms, " +
-                      $"total_received={m_responsesReceived}");
+                      $"queue_wait={response.queue_wait_ms:F1}ms");
 
-            // 1. Update telemetry (mark completed)
             m_telemetry.MarkFrameCompleted(response.frame_id, response);
 
-            // 2. Process results (example: just log detection count)
-            if (response.HasDetections())
-            {
-                Debug.Log($"[V3 DEMO] Frame {response.frame_id}: {response.detections.Length} detections");
-            }
-            else if (response.HasPose())
-            {
-                Debug.Log($"[V3 DEMO] Frame {response.frame_id}: {response.persons.Length} persons");
-            }
-            else if (response.HasSegmentation())
-            {
-                Debug.Log($"[V3 DEMO] Frame {response.frame_id}: Segmentation mask {response.segmentation.mask_width}x{response.segmentation.mask_height}");
-            }
+            // Push to metrics aggregator (P2)
+            m_metrics.PushLatency(response.latency_ms);
 
-            // 3. Mark as displayed (this automatically drops older frames and writes to CSV)
+            if (response.HasDetections())
+                Debug.Log($"[V3 DEMO] Frame {response.frame_id}: {response.detections.Length} detections");
+            else if (response.HasPose())
+                Debug.Log($"[V3 DEMO] Frame {response.frame_id}: {response.persons.Length} persons");
+            else if (response.HasSegmentation())
+                Debug.Log($"[V3 DEMO] Frame {response.frame_id}: " +
+                          $"Seg mask {response.segmentation.mask_width}×{response.segmentation.mask_height}");
+
+            // HUD update
+            if (m_sharedHUD != null)
+                m_sharedHUD.UpdateMetrics(response);
+
             m_telemetry.MarkFrameDisplayed(response.frame_id);
         }
 
-        /// <summary>
-        /// Capture frame from camera
-        /// </summary>
+        // ── Helpers ───────────────────────────────────────────────────────────
+
         private Texture2D CaptureFrame()
         {
             if (!m_cameraAccess.TryGetTexture(out Texture2D cameraTexture, out _))
-            {
                 return null;
-            }
-
             return cameraTexture;
         }
 
         /// <summary>
-        /// Update debug UI (optional)
+        /// Resize a texture by resFactor using Graphics.Blit into a temporary RenderTexture.
+        /// Supports any fractional scale (0.75, 0.5, etc.) not just integer divisors.
+        /// Returns a NEW Texture2D — caller is responsible for Destroy().
         /// </summary>
+        private static Texture2D ResizeTexture(Texture2D src, float resFactor)
+        {
+            int w = Mathf.Max(1, Mathf.RoundToInt(src.width  * resFactor));
+            int h = Mathf.Max(1, Mathf.RoundToInt(src.height * resFactor));
+
+            RenderTexture rt   = RenderTexture.GetTemporary(w, h, 0, RenderTextureFormat.ARGB32);
+            RenderTexture prev = RenderTexture.active;
+            Graphics.Blit(src, rt);
+            RenderTexture.active = rt;
+
+            Texture2D result = new Texture2D(w, h, TextureFormat.RGB24, false);
+            result.ReadPixels(new Rect(0, 0, w, h), 0, 0);
+            result.Apply();
+
+            RenderTexture.active = prev;
+            RenderTexture.ReleaseTemporary(rt);
+            return result;
+        }
+
         private void UpdateStatusUI()
         {
-            if (m_statusText == null)
-                return;
-
-            m_statusText.text = $"V3.0 Demo\n" +
-                                $"Sent: {m_framesSent}\n" +
-                                $"Received: {m_responsesReceived}\n" +
-                                $"FPS: {m_targetFPS:F1}\n" +
-                                $"Transport: {m_transport.GetStats()}\n" +
-                                $"Telemetry: {m_telemetry.GetStats()}";
+            if (m_statusText == null) return;
+            var p = m_knobs.CurrentProfile;
+            m_statusText.text =
+                $"V3.0 Demo | Profile: {p.Id}\n" +
+                $"Sent: {m_framesSent}  Recv: {m_responsesReceived}  N-drops: {m_nGateDrops}\n" +
+                $"FPS: {p.TargetFps:F1}  q={p.JpegQuality}  cap={p.InflightCap}\n" +
+                $"Transport: {m_transport?.GetStats()}\n" +
+                $"Telemetry: {m_telemetry?.GetStats()}";
         }
 
-        /// <summary>
-        /// Cleanup on destroy
-        /// </summary>
-        private void OnDestroy()
+#if UNITY_EDITOR
+        // Keyboard 1–5 in Editor: force-switch profile for quick testing
+        private void DebugProfileSwitch()
         {
-            Debug.Log($"[V3 DEMO] Shutting down...");
-
-            // Stop sending frames
-            CancelInvoke(nameof(SendNextFrame));
-
-            // Shutdown OOP components
-            m_transport?.Shutdown();
-            m_telemetry?.Shutdown();
-
-            Debug.Log($"[V3 DEMO] Final stats: Sent={m_framesSent}, Received={m_responsesReceived}");
+            if (Input.GetKeyDown(KeyCode.Alpha1)) m_knobs.Apply(OperatingProfile.Get("P1"));
+            if (Input.GetKeyDown(KeyCode.Alpha2)) m_knobs.Apply(OperatingProfile.Get("P2"));
+            if (Input.GetKeyDown(KeyCode.Alpha3)) m_knobs.Apply(OperatingProfile.Get("P3"));
+            if (Input.GetKeyDown(KeyCode.Alpha4)) m_knobs.Apply(OperatingProfile.Get("P4"));
+            if (Input.GetKeyDown(KeyCode.Alpha5)) m_knobs.Apply(OperatingProfile.Get("P5"));
         }
+#endif
     }
 }

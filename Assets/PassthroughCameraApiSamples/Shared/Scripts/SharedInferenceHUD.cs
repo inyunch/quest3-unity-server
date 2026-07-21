@@ -48,6 +48,12 @@ namespace PassthroughCameraSamples.Shared
         // Target FPS for reference
         private float m_targetFPS = 10f;
 
+        // Control-plane metrics (P2)
+        private float  m_p95Latency   = 0f;
+        private float  m_meanAge      = 0f;
+        private int    m_pendingN     = 0;
+        private string m_profileId    = "";
+
         private void Start()
         {
             Debug.Log("[SharedHUD] SharedInferenceHUD started");
@@ -166,6 +172,19 @@ namespace PassthroughCameraSamples.Shared
         }
 
         /// <summary>
+        /// Update the HUD with the latest control-plane window metrics.
+        /// Call from RuntimeController or the manager's Update() every epoch (or every frame is fine).
+        /// </summary>
+        public void UpdateControlPlaneMetrics(
+            ControlPlane.MetricsSnapshot snapshot, string profileId)
+        {
+            m_p95Latency = snapshot.P95L;
+            m_meanAge    = snapshot.MeanA;
+            m_pendingN   = snapshot.PendingN;
+            m_profileId  = profileId ?? "";
+        }
+
+        /// <summary>
         /// Reset frame statistics.
         /// </summary>
         public void ResetStatistics()
@@ -209,6 +228,13 @@ namespace PassthroughCameraSamples.Shared
             // Build simplified metrics string - ONLY TIMESTAMP AND E2E LATENCY
             string metricsStr = $"<b>Time:</b> {timestamp}\n\n";
             metricsStr += $"<b>E2E Latency:</b> <color=#00FF00>{m_e2eMs:F0}ms</color>";
+
+            // Control-plane overlay (shown when a profile is active)
+            if (!string.IsNullOrEmpty(m_profileId))
+            {
+                metricsStr += $"\n<b>Profile:</b> {m_profileId}  N={m_pendingN}";
+                metricsStr += $"\n<b>p95:</b> {m_p95Latency:F0}ms  <b>Age:</b> {m_meanAge:F0}ms";
+            }
 
             m_metricsText.text = metricsStr;
 

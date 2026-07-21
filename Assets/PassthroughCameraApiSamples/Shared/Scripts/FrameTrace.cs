@@ -61,6 +61,14 @@ namespace PassthroughCameraSamples.Shared
         // === NEW: Session Context ===
         public int session_frame_index;       // Sequential index of this logged frame (0, 1, 2, ...)
 
+        // === Control Plane (P3) — populated by FrameTelemetryTracker.CreateFrame ===
+        public string profile_id  = "";    // OperatingProfile.Id active when frame was sent
+        public int    res_width;           // actual encoded width (after resFactor resize)
+        public int    jpeg_q;              // JPEG quality used for this frame
+        public float  target_fps;          // TargetFps of the active profile
+        public string policy_id   = "";    // IPolicy.Id that chose this profile ("" = no control plane)
+        public string guard_event = "";    // SafetyGuard event ("", "COOLDOWN_HOLD", "VIOLATION_FORCE_P5")
+
         // === Payload Size Tracking ===
         public int upload_bytes_uncompressed;  // Original RGB24 size
         public int upload_bytes_compressed;    // JPEG compressed size

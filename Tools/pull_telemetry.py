@@ -107,13 +107,10 @@ def copy_to_public():
     """Copy files from app private directory to public /sdcard/"""
     print_color("Step 1/3: Copying files to public directory on Quest...", Colors.YELLOW)
 
-    cmd = ["adb", "shell", "cp", f"{APP_PRIVATE_PATH}telemetry_*.csv", PUBLIC_PATH]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-
-    if result.returncode != 0:
-        print_color("ERROR: Failed to copy files to public directory", Colors.RED)
-        print(result.stderr)
-        return False
+    # Copy both per-frame telemetry and per-epoch control-plane CSV files
+    for pattern in ["telemetry_*.csv", "epoch_*.csv"]:
+        cmd = ["adb", "shell", "cp", f"{APP_PRIVATE_PATH}{pattern}", PUBLIC_PATH]
+        subprocess.run(cmd, capture_output=True, text=True)  # ignore missing pattern errors
 
     print_color("✓ Files copied to /sdcard/", Colors.GREEN)
     print()
@@ -126,13 +123,15 @@ def pull_files(output_dir):
 
     print_color("Step 2/3: Pulling files from Quest to PC...", Colors.YELLOW)
 
-    # Pull files
-    cmd = ["adb", "pull", f"{PUBLIC_PATH}telemetry_*.csv", output_dir]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    pulled_any = False
+    for pattern in ["telemetry_*.csv", "epoch_*.csv"]:
+        cmd = ["adb", "pull", f"{PUBLIC_PATH}{pattern}", output_dir]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            pulled_any = True
 
-    if result.returncode != 0:
-        print_color("ERROR: Failed to pull files from Quest", Colors.RED)
-        print(result.stderr)
+    if not pulled_any:
+        print_color("ERROR: Failed to pull any telemetry files from Quest", Colors.RED)
         return False
 
     print_color(f"✓ Files pulled to: {os.path.abspath(output_dir)}", Colors.GREEN)
@@ -144,13 +143,11 @@ def cleanup_public():
     """Clean up temporary files from /sdcard/"""
     print_color("Step 3/3: Cleaning up temporary files on Quest...", Colors.YELLOW)
 
-    cmd = ["adb", "shell", "rm", f"{PUBLIC_PATH}telemetry_*.csv"]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    for pattern in ["telemetry_*.csv", "epoch_*.csv"]:
+        subprocess.run(["adb", "shell", "rm", f"{PUBLIC_PATH}{pattern}"],
+                       capture_output=True, text=True)
 
-    if result.returncode != 0:
-        print_color("Warning: Failed to clean up /sdcard/ (files may remain)", Colors.YELLOW)
-    else:
-        print_color("✓ Temporary files removed from /sdcard/", Colors.GREEN)
+    print_color("✓ Temporary files removed from /sdcard/", Colors.GREEN)
 
     print()
 
@@ -161,7 +158,10 @@ def list_local_files(output_dir):
 
     print_color("Pulled files:", Colors.CYAN)
 
-    files = sorted(Path(output_dir).glob("telemetry_*.csv"))
+    files = sorted(
+        list(Path(output_dir).glob("telemetry_*.csv")) +
+        list(Path(output_dir).glob("epoch_*.csv"))
+    )
 
     if not files:
         print_color("  (none)", Colors.YELLOW)
@@ -189,14 +189,10 @@ def delete_remote_files():
 
     if response == "y":
         print_color("Deleting files from Quest app directory...", Colors.YELLOW)
-        cmd = ["adb", "shell", "rm", f"{APP_PRIVATE_PATH}telemetry_*.csv"]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-
-        if result.returncode == 0:
-            print_color("✓ Files deleted from Quest", Colors.GREEN)
-        else:
-            print_color("ERROR: Failed to delete files", Colors.RED)
-            print(result.stderr)
+        for pattern in ["telemetry_*.csv", "epoch_*.csv"]:
+            subprocess.run(["adb", "shell", "rm", f"{APP_PRIVATE_PATH}{pattern}"],
+                           capture_output=True, text=True)
+        print_color("✓ Files deleted from Quest", Colors.GREEN)
     else:
         print_color("Files kept on Quest (you can delete manually later)", Colors.YELLOW)
 

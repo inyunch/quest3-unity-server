@@ -100,7 +100,14 @@ namespace PassthroughCameraSamples.Shared
                 "cumulative_freeze_frames",
                 "freeze_ratio",
                 "frame_gap",
-                "cumulative_dropped"
+                "cumulative_dropped",
+                // Control-plane columns (P3) — appended to keep old schema intact
+                "profile_id",
+                "res_width",
+                "jpeg_q",
+                "target_fps",
+                "policy_id",
+                "guard_event"
             );
 
             m_writer.WriteLine(header);
@@ -165,7 +172,14 @@ namespace PassthroughCameraSamples.Shared
                     trace.cumulative_freeze_frames,                     // cumulative_freeze_frames
                     trace.freeze_ratio.ToString("F3"),                  // freeze_ratio
                     trace.frame_gap,                                    // frame_gap
-                    trace.cumulative_dropped                            // cumulative_dropped
+                    trace.cumulative_dropped,                           // cumulative_dropped
+                    // Control-plane columns (P3)
+                    EscapeCsv(trace.profile_id  ?? ""),                 // profile_id
+                    trace.res_width,                                    // res_width
+                    trace.jpeg_q,                                       // jpeg_q
+                    trace.target_fps.ToString("F1"),                    // target_fps
+                    EscapeCsv(trace.policy_id   ?? ""),                 // policy_id
+                    EscapeCsv(trace.guard_event ?? "")                  // guard_event
                 );
 
                 m_writer.WriteLine(row);

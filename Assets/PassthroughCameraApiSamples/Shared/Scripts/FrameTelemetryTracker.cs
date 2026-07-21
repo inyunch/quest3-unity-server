@@ -44,6 +44,14 @@ namespace PassthroughCameraSamples.Shared
         private LocalTelemetryWriter m_localTelemetry;
 
         // ====================================================================
+        // In-flight counter (P2)
+        // ====================================================================
+        // Counts frames in Pending state only (sent, awaiting first server response).
+        // Decremented in MarkFrameCompleted, MarkFrameFailed, and DropSupersededFrames
+        // (for frames that were still Pending when a newer frame was displayed).
+        private int m_pendingCount = 0;
+
+        // ====================================================================
         // Statistics
         // ====================================================================
         private int m_totalFramesSent = 0;
@@ -90,22 +98,34 @@ namespace PassthroughCameraSamples.Shared
         /// <param name="frameId">Frame number</param>
         /// <param name="jpegBytes">JPEG payload size for upload tracking</param>
         /// <returns>New frame trace</returns>
-        public FrameTrace CreateFrame(int frameId, int jpegBytes)
+        public FrameTrace CreateFrame(int frameId, int jpegBytes,
+            ControlPlane.OperatingProfile profile = null, string policyId = "")
         {
             FrameTrace trace = new FrameTrace(frameId)
             {
                 session_id = m_sessionId,
-                upload_bytes_compressed = jpegBytes,
-                upload_bytes_uncompressed = 0  // Will be filled if needed
+                upload_bytes_compressed   = jpegBytes,
+                upload_bytes_uncompressed = 0
             };
+
+            // Stamp control-plane fields when a profile is active
+            if (profile != null)
+            {
+                trace.profile_id = profile.Id;
+                trace.res_width  = profile.ResWidth;
+                trace.jpeg_q     = profile.JpegQuality;
+                trace.target_fps = profile.TargetFps;
+            }
+            trace.policy_id = policyId;
 
             lock (m_frameTracesLock)
             {
                 m_frameTraces[frameId] = trace;
                 m_totalFramesSent++;
+                m_pendingCount++;  // Frame enters Pending state
             }
 
-            Debug.Log($"[TELEMETRY] Created frame {frameId}, state=Pending");
+            Debug.Log($"[TELEMETRY] Created frame {frameId}, state=Pending, pending={m_pendingCount}");
             return trace;
         }
 
@@ -129,6 +149,10 @@ namespace PassthroughCameraSamples.Shared
 
                 // Remember original state to detect late responses
                 FrameState originalState = trace.state;
+
+                // Decrement pending count when leaving Pending state (only once)
+                if (originalState == FrameState.Pending)
+                    m_pendingCount = System.Math.Max(0, m_pendingCount - 1);
 
                 // Update frame trace with response data
                 long receiveTime = TimestampUtil.GetUnixTimestampMs();
@@ -236,6 +260,10 @@ namespace PassthroughCameraSamples.Shared
                     return;
                 }
 
+                // Decrement pending count when leaving Pending state
+                if (trace.state == FrameState.Pending)
+                    m_pendingCount = System.Math.Max(0, m_pendingCount - 1);
+
                 trace.MarkFailed(errorReason);
                 m_failedFrames++;
 
@@ -275,6 +303,9 @@ namespace PassthroughCameraSamples.Shared
             foreach (int frameId in framesToDrop)
             {
                 FrameTrace trace = m_frameTraces[frameId];
+                // Decrement pending count for frames that were still in Pending state
+                if (trace.state == FrameState.Pending)
+                    m_pendingCount = System.Math.Max(0, m_pendingCount - 1);
                 trace.MarkDropped(dropTime, $"superseded_by_newer_{displayedFrameId}");
                 m_droppedFrames++;
 
@@ -350,6 +381,35 @@ namespace PassthroughCameraSamples.Shared
                 return $"Sent={m_totalFramesSent}, Displayed={m_displayedFrames}, " +
                        $"Dropped={m_droppedFrames}, Failed={m_failedFrames}, " +
                        $"Pending={m_frameTraces.Count}";
+            }
+        }
+
+        // ====================================================================
+        // Control-plane accessors (P2)
+        // ====================================================================
+
+        /// <summary>Number of frames currently in Pending state (sent, not yet responded). Thread-safe.</summary>
+        public int GetPendingCount()
+        {
+            lock (m_frameTracesLock) { return m_pendingCount; }
+        }
+
+        /// <summary>
+        /// Frame id of the last frame successfully displayed, or -1 if none yet.
+        /// Used by the age sampler in Update() to compute render-age A_r.
+        /// </summary>
+        public int GetLastDisplayedFrameId()
+        {
+            lock (m_frameTracesLock) { return m_lastDisplayedFrameId; }
+        }
+
+        /// <summary>Returns the FrameTrace for the given frame id, or null if not found.</summary>
+        public FrameTrace GetTrace(int frameId)
+        {
+            lock (m_frameTracesLock)
+            {
+                m_frameTraces.TryGetValue(frameId, out FrameTrace trace);
+                return trace;
             }
         }
 
