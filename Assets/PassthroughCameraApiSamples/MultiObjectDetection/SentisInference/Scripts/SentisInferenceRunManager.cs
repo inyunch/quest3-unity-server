@@ -10,11 +10,12 @@ using Unity.InferenceEngine;
 using UnityEngine;
 using UnityEngine.Networking;
 using PassthroughCameraSamples.Shared;
+using PassthroughCameraSamples.Shared.ControlPlane;
 
 namespace PassthroughCameraSamples.MultiObjectDetection
 {
     [MetaCodeSample("PassthroughCameraApiSamples-MultiObjectDetection")]
-    public class SentisInferenceRunManager : MonoBehaviour
+    public class SentisInferenceRunManager : MonoBehaviour, IControlPlaneTarget
     {
         [SerializeField] private PassthroughCameraAccess m_cameraAccess;
         [SerializeField] private DetectionUiMenuManager m_uiMenuManager;
@@ -34,6 +35,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
 
         [Header("Server Inference")]
         [SerializeField] private bool m_useServerInference = false;
+        [SerializeField] private bool m_useUDPTransport = true;
         [SerializeField] private InferenceConfig m_inferenceConfig = new InferenceConfig
         {
             mode = InferenceMode.ObjectDetection,
@@ -43,18 +45,30 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             includeDepth = false
         };
 
+        [Header("Control Plane")]
+        [Tooltip("Enable control plane: dynamic pacing, N gate, profile-based resize/quality. " +
+                 "When off, falls back to InferenceConfig targetFPS/jpegQuality/downsampleFactor.")]
+        [SerializeField] private bool m_useControlPlane = true;
+        [Tooltip("Initial OperatingProfile id (P1-P5). Add RuntimeController to this GameObject for adaptive policies.")]
+        [SerializeField] private string m_initialProfileId = "P3";
+
         [Header("[Editor Only] Convert to Sentis")]
         public ModelAsset OnnxModel;
         [Space(40)]
 
         // ============================================================================
-        // V3.0 OOP COMPONENTS - Replaces inline UDP + telemetry code
+        // V3.0 OOP COMPONENTS
         // ============================================================================
         private UDPTransportManager m_transport;
         private FrameTelemetryTracker m_telemetry;
-        [SerializeField] private bool m_useUDPTransport = true;
 
-        // Sentis engine and detections
+        // Control plane
+        private ControlKnobs m_knobs;
+        private MetricsAggregator m_metrics;
+        private Coroutine m_sendLoop;
+        private int m_nGateDrops;
+
+        // Sentis engine
         private Worker m_engine;
         private Vector2Int m_inputSize;
         private readonly List<(int classId, Vector4 boundingBox)> m_detections = new List<(int classId, Vector4 boundingBox)>();
@@ -63,7 +77,14 @@ namespace PassthroughCameraSamples.MultiObjectDetection
         private int m_frameId = 0;
         private string m_sessionId;
         private bool m_cameraReady = false;
-        private float m_nextInferenceTime = 0f;
+        private bool m_isInitialized = false;
+
+        // ============================================================================
+        // IControlPlaneTarget (RuntimeController binds to these)
+        // ============================================================================
+        public ControlKnobs Knobs        => m_knobs;
+        public MetricsAggregator Metrics  => m_metrics;
+        public string SessionId           => m_sessionId;
 
         private void Awake()
         {
@@ -75,63 +96,78 @@ namespace PassthroughCameraSamples.MultiObjectDetection
 
         private IEnumerator Start()
         {
-            // Generate unique session ID for this recording session
             m_sessionId = System.Guid.NewGuid().ToString();
             Debug.Log($"[V3 DETECTION] Started session: {m_sessionId}");
 
-            // V3.0: Initialize OOP components
             if (m_useServerInference && m_useUDPTransport)
             {
                 try
                 {
-                    // Initialize UDP Transport Manager
                     m_transport = new UDPTransportManager(
-                        serverIP: ServerConfig.Instance.ServerIP,
-                        sendPort: 8002,
+                        serverIP:    ServerConfig.Instance.ServerIP,
+                        sendPort:    8002,
                         receivePort: 8003
                     );
                     m_transport.Initialize();
-                    Debug.Log($"[V3 DETECTION] UDP Transport initialized");
+                    Debug.Log("[V3 DETECTION] UDP Transport initialized");
 
-                    // Initialize Telemetry Tracker
                     m_telemetry = new FrameTelemetryTracker(
-                        sessionId: m_sessionId,
-                        sceneName: "MultiObjectDetection",
+                        sessionId:            m_sessionId,
+                        sceneName:            "MultiObjectDetection",
                         enableLocalTelemetry: true
                     );
-                    Debug.Log($"[V3 DETECTION] Telemetry tracker initialized");
+                    Debug.Log("[V3 DETECTION] Telemetry tracker initialized");
+
+                    // Control plane: initialize from profile table (only when enabled)
+                    if (m_useControlPlane)
+                    {
+                        var initialProfile = OperatingProfile.Get(m_initialProfileId);
+                        if (initialProfile == null)
+                        {
+                            Debug.LogWarning($"[V3 DETECTION] Unknown profile '{m_initialProfileId}', defaulting to P3");
+                            initialProfile = OperatingProfile.Get("P3");
+                        }
+                        m_knobs   = new ControlKnobs(initialProfile);
+                        m_metrics = new MetricsAggregator(() => m_telemetry?.GetPendingCount() ?? 0);
+                        Debug.Log($"[V3 DETECTION] Control plane initialized. profile={initialProfile.Id}, " +
+                                  $"fps={initialProfile.TargetFps}, resFactor={initialProfile.ResFactor}");
+                    }
+                    else
+                    {
+                        Debug.Log("[V3 DETECTION] Control plane disabled — using InferenceConfig settings");
+                    }
                 }
                 catch (System.Exception e)
                 {
                     Debug.LogError($"[V3 DETECTION] Failed to initialize V3 components: {e.Message}");
-                    m_useUDPTransport = false;  // Fall back to local mode
+                    m_useUDPTransport = false;
                 }
             }
 
             m_uiInference.SetLabels(m_labelsAsset);
 
-            // Validate and log inference configuration
             if (m_useServerInference)
             {
                 m_inferenceConfig.Validate();
                 m_inferenceConfig.LogSummary();
 
-                // Initialize SharedInferenceHUD if available
                 if (m_sharedHUD != null)
                 {
-                    m_sharedHUD.SetMode(m_inferenceConfig.mode, m_inferenceConfig.targetFPS);
+                    float displayFps = m_knobs != null ? m_knobs.CurrentProfile.TargetFps : m_inferenceConfig.targetFPS;
+                    m_sharedHUD.SetMode(m_inferenceConfig.mode, displayFps);
                 }
 
-                // Test server connection at startup
                 Debug.Log("[V3 DETECTION] Testing connection to server...");
                 yield return TestServerConnection();
             }
 
-            // Set camera ready flag and initialize timing
-            m_cameraReady = true;
-            m_nextInferenceTime = Time.time;
+            m_cameraReady   = true;
+            m_isInitialized = m_useServerInference && m_useUDPTransport && m_transport != null;
 
-            Debug.Log("[V3 DETECTION] Start() complete - inference now driven by Update() at fixed cadence");
+            if (m_isInitialized)
+                m_sendLoop = StartCoroutine(SendLoop());
+
+            Debug.Log("[V3 DETECTION] Start() complete");
         }
 
         private void OnDestroy()
@@ -141,30 +177,27 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             m_engine.PeekOutput(2)?.CompleteAllPendingOperations();
             m_engine.Dispose();
 
-            // V3.0: Shutdown OOP components
+            if (m_sendLoop != null) StopCoroutine(m_sendLoop);
             m_transport?.Shutdown();
             m_telemetry?.Shutdown();
 
-            Debug.Log("[V3 DETECTION] Cleanup complete");
+            Debug.Log($"[V3 DETECTION] Cleanup complete. N-gate drops={m_nGateDrops}");
         }
 
         internal static void PreloadModel(ModelAsset modelAsset)
         {
-            // Load model
             var model = ModelLoader.Load(modelAsset);
             var inputShape = model.inputs[0].shape;
 
-            // Create engine to run model
             using var worker = new Worker(model, BackendType.CPU);
 
-            // Run inference with an empty image to load the model in the memory. The first inference blocks the main thread for a long time, so we're doing it on the app launch
+            // Warm-up inference to front-load JIT compilation; first real inference would otherwise block the thread
             Texture tempTexture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
             var textureTransform = new TextureTransform().SetDimensions(tempTexture.width, tempTexture.height, 3);
             using var input = new Tensor<float>(new TensorShape(1, 3, inputShape.Get(2), inputShape.Get(3)));
             TextureConverter.ToTensor(tempTexture, input, textureTransform);
             worker.Schedule(input);
 
-            // Complete the inference immediately and destroy the temporary texture
             worker.PeekOutput(0).CompleteAllPendingOperations();
             worker.PeekOutput(1).CompleteAllPendingOperations();
             worker.PeekOutput(2).CompleteAllPendingOperations();
@@ -172,50 +205,144 @@ namespace PassthroughCameraSamples.MultiObjectDetection
         }
 
         // ============================================================================
-        // V3.0: UPDATE LOOP - Fixed cadence send + response polling
+        // V3.0: UPDATE LOOP
         // ============================================================================
 
         private void Update()
         {
-            // V3.0: ALWAYS poll for UDP responses (even if camera not ready)
-            // Responses may arrive for frames sent before camera stopped
-            if (m_useServerInference && m_useUDPTransport && m_transport != null)
+            if (!m_isInitialized) return;
+
+            // Drain UDP response queue
+            while (m_transport.TryGetResponse(out FrameResponse response))
+                HandleV3Response(response);
+
+            // Age sampler (P2): only when control plane is active
+            if (m_metrics != null)
             {
-                while (m_transport.TryGetResponse(out FrameResponse response))
+                int displayedId = m_telemetry.GetLastDisplayedFrameId();
+                if (displayedId >= 0)
                 {
-                    HandleV3Response(response);
+                    FrameTrace displayedTrace = m_telemetry.GetTrace(displayedId);
+                    if (displayedTrace != null && displayedTrace.unity_send_ts > 0)
+                    {
+                        float ageMs = TimestampUtil.GetUnixTimestampMs() - displayedTrace.unity_send_ts;
+                        m_metrics.PushAge(ageMs);
+                    }
+                }
+
+                if (m_sharedHUD != null)
+                    m_sharedHUD.UpdateControlPlaneMetrics(m_metrics.Snapshot(), m_knobs.CurrentProfile.Id);
+            }
+
+            // Periodic telemetry cleanup (~every 5 seconds at 60fps)
+            if (Time.frameCount % 300 == 0)
+                m_telemetry.CleanupOldTraces();
+
+#if UNITY_EDITOR
+            DebugProfileSwitch();
+#endif
+        }
+
+        // ============================================================================
+        // V3.0: DYNAMIC-PACING SEND LOOP (P1 - replaces fixed cadence from Update)
+        // ============================================================================
+
+        private IEnumerator SendLoop()
+        {
+            while (true)
+            {
+                bool paused = m_uiMenuManager != null && m_uiMenuManager.IsPaused;
+                if (m_cameraReady && !paused)
+                    SendNextFrame();
+
+                float fps = m_knobs != null
+                    ? m_knobs.CurrentProfile.TargetFps
+                    : m_inferenceConfig.targetFPS;
+                yield return new WaitForSeconds(1f / Mathf.Max(0.1f, fps));
+            }
+        }
+
+        // ============================================================================
+        // V3.0: FRAME SEND (N gate + profile resize + encode)
+        // ============================================================================
+
+        private void SendNextFrame()
+        {
+            if (!m_cameraAccess.IsPlaying) return;
+
+            bool cpActive = m_knobs != null;
+
+            // N gate (P2): skip if too many frames already in-flight (control plane only)
+            if (cpActive)
+            {
+                int pending = m_telemetry.GetPendingCount();
+                if (pending >= m_knobs.CurrentProfile.InflightCap)
+                {
+                    m_nGateDrops++;
+                    m_metrics.RecordDropped();
+                    Debug.Log($"[V3 DETECTION] N gate: pending={pending} >= cap={m_knobs.CurrentProfile.InflightCap}, " +
+                              $"total_drops={m_nGateDrops}");
+                    return;
                 }
             }
 
-            // V3.0: Fixed cadence inference triggering (UDP mode only)
-            if (m_useServerInference && m_useUDPTransport && m_cameraReady)
+            try
             {
-                // Check if paused
-                if (m_uiMenuManager != null && m_uiMenuManager.IsPaused)
+                // 1. Capture camera frame as Texture2D
+                Texture2D frame = GetCameraTexture2D();
+                if (frame == null)
                 {
-                    return;  // Don't send inference requests while paused
+                    Debug.LogWarning("[V3 DETECTION] Failed to capture camera frame");
+                    return;
                 }
 
-                // Check if it's time for next inference
-                float currentTime = Time.time;
-                if (currentTime >= m_nextInferenceTime)
+                // 2. Resize — profile ResFactor (control plane) or InferenceConfig downsampleFactor (fallback)
+                Texture2D toEncode = frame;
+                bool didResize = false;
+                if (cpActive && m_knobs.CurrentProfile.ResFactor < 0.99f)
                 {
-                    // Calculate next inference time BEFORE starting inference (fixed cadence)
-                    float targetInterval = m_inferenceConfig.GetInferenceInterval();
-                    m_nextInferenceTime = currentTime + targetInterval;
-
-                    // Start inference without blocking (fire and forget)
-                    StartCoroutine(RunInferenceNonBlocking());
-
-                    Debug.Log($"[V3 DETECTION] Triggered inference at fixed cadence (interval={targetInterval * 1000f:F0}ms)");
+                    toEncode  = ResizeTexture(frame, m_knobs.CurrentProfile.ResFactor);
+                    didResize = true;
+                }
+                else if (!cpActive && m_inferenceConfig.downsampleFactor > 1)
+                {
+                    float factor = 1f / m_inferenceConfig.downsampleFactor;
+                    toEncode  = ResizeTexture(frame, factor);
+                    didResize = true;
                 }
 
-                // V3.0: Periodic telemetry cleanup (every 60 frames = ~1 second at 60fps)
-                // ✅ P0 FIX: Null-safe operator in case telemetry init failed
-                if (Time.frameCount % 60 == 0)
+                // 3. JPEG encode — profile quality (control plane) or InferenceConfig (fallback)
+                int jpegQuality = cpActive ? m_knobs.CurrentProfile.JpegQuality : m_inferenceConfig.jpegQuality;
+                byte[] jpegData = toEncode.EncodeToJPG(jpegQuality);
+                int rawBytes    = toEncode.width * toEncode.height * 3;  // capture before Destroy
+
+                StartCoroutine(DestroyNextFrame(frame));
+                if (didResize) StartCoroutine(DestroyNextFrame(toEncode));
+
+                // 4. Create frame trace (with profile metadata if control plane active)
+                m_frameId++;
+                OperatingProfile profile = cpActive ? m_knobs.CurrentProfile : null;
+                FrameTrace trace = m_telemetry.CreateFrame(m_frameId, jpegData.Length, profile, policyId: "");
+                trace.upload_bytes_uncompressed = rawBytes;
+
+                // 5. Send via UDP (non-blocking fire-and-forget)
+                string profileId = cpActive ? m_knobs.CurrentProfile.Id : "off";
+                string telemetryJson = $"{{\"mode\":\"detection\",\"scene\":\"MultiObjectDetection\",\"profile\":\"{profileId}\"}}";
+                m_transport.SendFrame(trace, jpegData, telemetryJson);
+
+                if (cpActive)
                 {
-                    m_telemetry?.CleanupOldTraces();
+                    m_metrics.RecordSent();
+                    m_metrics.PushBytes(jpegData.Length);
                 }
+
+                Debug.Log($"[V3 DETECTION] Sent frame {trace.frame_id} " +
+                          $"({toEncode.width}x{toEncode.height}, q={jpegQuality}, " +
+                          $"size={jpegData.Length / 1024}KB)");
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogError($"[V3 DETECTION] Error sending frame {m_frameId}: {e.Message}");
             }
         }
 
@@ -223,46 +350,30 @@ namespace PassthroughCameraSamples.MultiObjectDetection
         // V3.0: RESPONSE HANDLING
         // ============================================================================
 
-        /// <summary>
-        /// V3.0: Handle received inference response from UDPTransportManager.
-        /// Updates telemetry and displays detection results.
-        /// </summary>
         private void HandleV3Response(FrameResponse response)
         {
             Debug.Log($"[V3 DETECTION] Received response for frame {response.frame_id}, " +
                       $"server_proc={response.processing_time_ms:F1}ms, " +
                       $"queue_wait={response.queue_wait_ms:F1}ms");
 
-            // 1. Update telemetry (mark completed)
             m_telemetry.MarkFrameCompleted(response.frame_id, response);
+            m_metrics?.PushLatency(response.latency_ms);
 
-            // 2. Display detection results
             DisplayV3Frame(response);
-
-            // 3. Update HUD metrics (CRITICAL: Must be AFTER MarkFrameCompleted but ALWAYS called)
             UpdateMetricsDisplay(response);
-
-            // 4. Mark as displayed (this automatically writes to CSV)
             m_telemetry.MarkFrameDisplayed(response.frame_id);
         }
 
-        /// <summary>
-        /// V3.0: Display detection frame using FrameResponse.
-        /// Replaces old DisplayFrame() that used ServerResponse.
-        /// </summary>
         private void DisplayV3Frame(FrameResponse response)
         {
-            // Get cached camera pose
             var cachedCameraPose = m_cameraAccess.GetCameraPose();
 
-            // Check if spatial anchor is tracked
             if (!m_cameraAccess.IsPlaying || m_detectionManager.m_spatialAnchor == null || !m_detectionManager.m_spatialAnchor.IsTracked)
             {
                 m_detections.Clear();
                 return;
             }
 
-            // Check if response has detection data
             if (!response.HasDetections())
             {
                 m_detections.Clear();
@@ -270,328 +381,157 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 return;
             }
 
-            // Convert FrameResponse.DetectionData[] to Unity format
             m_detections.Clear();
 
-            // Calculate scale factors to convert from camera resolution to model input resolution
-            // Note: response.input_width/height are the camera image dimensions
-            // m_inputSize is the Sentis model input dimensions (640x640)
+            // Scale bbox from camera resolution -> Sentis model input resolution
             float scaleX = m_inputSize.x / (float)response.input_width;
             float scaleY = m_inputSize.y / (float)response.input_height;
 
             foreach (var det in response.detections)
             {
-                // Convert bbox from image space to model input space
-                // bbox_pixels is in camera resolution, scale to model input resolution
                 Vector4 bboxUnity = new Vector4(
-                    det.bbox_pixels[0] * scaleX,  // x1
-                    det.bbox_pixels[1] * scaleY,  // y1
-                    det.bbox_pixels[2] * scaleX,  // x2
-                    det.bbox_pixels[3] * scaleY   // y2
+                    det.bbox_pixels[0] * scaleX,
+                    det.bbox_pixels[1] * scaleY,
+                    det.bbox_pixels[2] * scaleX,
+                    det.bbox_pixels[3] * scaleY
                 );
-
                 m_detections.Add((det.class_id, bboxUnity));
             }
 
             Debug.Log($"[V3 DETECTION] Frame {response.frame_id}: Converted {m_detections.Count} detections");
-
-            // Draw detections using UI inference (DrawUIBoxes method)
             m_uiInference.DrawUIBoxes(m_detections, m_inputSize, cachedCameraPose);
-
-            // NOTE: UpdateMetricsDisplay is now called in HandleV3Response (always, regardless of detections/tracking)
         }
 
-        /// <summary>
-        /// V3.0: Update all HUD displays with frame metrics.
-        /// </summary>
         private void UpdateMetricsDisplay(FrameResponse response)
         {
-            Debug.Log($"[MANAGER] UpdateMetricsDisplay called");
-            Debug.Log($"[MANAGER] m_sharedHUD={(m_sharedHUD != null ? "Connected" : "NULL")}, m_inferenceHUD={(m_inferenceHUD != null ? "Connected" : "NULL")}, m_uiMenuManager={(m_uiMenuManager != null ? "Connected" : "NULL")}");
-            Debug.Log($"[MANAGER] Response: E2E={response.latency_ms:F0}ms, server_e2e={response.server_e2e_ms:F0}ms, parse={response.parse_ms:F0}ms");
-
-            // Calculate average detection confidence
             float avgConfidence = 0f;
             if (response.detections != null && response.detections.Length > 0)
             {
                 float sum = 0f;
-                foreach (var det in response.detections)
-                {
-                    sum += det.confidence;
-                }
+                foreach (var det in response.detections) sum += det.confidence;
                 avgConfidence = sum / response.detections.Length;
             }
 
-            // SharedInferenceHUD now calculates metrics directly from FrameResponse
             if (m_sharedHUD != null)
-            {
                 m_sharedHUD.UpdateMetrics(response);
-            }
 
-            // Legacy HUD updates (if still used)
             if (m_uiMenuManager != null || m_inferenceHUD != null)
             {
-                // Use server-provided timing breakdown
-                float e2eMs = response.latency_ms;
-                float serverE2eMs = response.server_e2e_ms;
-                float parseMs = response.parse_ms;
-                float networkMs = e2eMs - serverE2eMs - parseMs;  // Upload + Download
+                float e2eMs        = response.latency_ms;
+                float serverE2eMs  = response.server_e2e_ms;
+                float parseMs      = response.parse_ms;
+                float networkMs    = e2eMs - serverE2eMs - parseMs;
                 float serverProcMs = response.processing_time_ms;
 
-                if (m_uiMenuManager != null)
-                {
-                    m_uiMenuManager.UpdateMetrics(
-                        e2eMs,
-                        networkMs / 2,  // uploadMs (approximation)
-                        serverProcMs,
-                        networkMs / 2,  // downloadMs (approximation)
-                        parseMs,
-                        0,  // uploadBytesCompressed
-                        0,  // downloadBytesCompressed
-                        avgConfidence
-                    );
-                }
+                m_uiMenuManager?.UpdateMetrics(
+                    e2eMs, networkMs / 2, serverProcMs, networkMs / 2, parseMs,
+                    0, 0, avgConfidence);
 
                 if (m_inferenceHUD != null)
                 {
-                    Debug.Log($"[MANAGER] Calling m_inferenceHUD.UpdateHUD with E2E={e2eMs:F0}ms, server={serverProcMs:F0}ms, parse={parseMs:F0}ms");
                     m_inferenceHUD.UpdateHUD(
-                        e2eMs,
-                        networkMs / 2,  // uploadMs
-                        serverProcMs,
-                        networkMs / 2,  // downloadMs
-                        parseMs,
-                        0,  // uploadBytesCompressed
-                        0,  // downloadBytesUncompressed
-                        0,  // downloadBytesCompressed
-                        response.detections?.Length ?? 0,
-                        avgConfidence
-                    );
-                }
-                else
-                {
-                    Debug.LogWarning("[MANAGER] m_inferenceHUD is NULL, cannot update!");
+                        e2eMs, networkMs / 2, serverProcMs, networkMs / 2, parseMs,
+                        0, 0, 0,
+                        response.detections?.Length ?? 0, avgConfidence);
                 }
             }
         }
 
         // ============================================================================
-        // V3.0: NON-BLOCKING INFERENCE SEND
+        // TEXTURE HELPERS
         // ============================================================================
 
-        /// <summary>
-        /// V3.0: Non-blocking inference runner called from Update() at fixed intervals.
-        /// Encodes frame, creates trace, sends via UDP, returns immediately.
-        /// </summary>
-        private IEnumerator RunInferenceNonBlocking()
+        private Texture2D GetCameraTexture2D()
         {
-            // Quick checks
-            if (!m_cameraAccess.IsPlaying)
+            Texture texture = m_cameraAccess.GetTexture();
+            if (texture == null) return null;
+
+            if (texture is Texture2D tex2D) return tex2D;
+
+            if (texture is RenderTexture rt)
             {
-                Debug.Log("[V3 DETECTION] Camera not playing, skipping inference");
-                yield break;
-            }
-
-            // Get current frame texture
-            Texture targetTexture = m_cameraAccess.GetTexture();
-
-            // 1. Encode JPEG
-            byte[] jpegData = EncodeTextureToJPEG(targetTexture);
-            if (jpegData == null)
-            {
-                Debug.LogError("[V3 DETECTION] Failed to encode texture to JPEG");
-                yield break;
-            }
-
-            // 2. Create frame trace
-            m_frameId++;
-            FrameTrace trace = m_telemetry.CreateFrame(m_frameId, jpegData.Length);
-
-            Debug.Log($"[V3 DETECTION] Frame {trace.frame_id} created, size={jpegData.Length} bytes");
-
-            // 3. Build minimal telemetry JSON for server (mode + scene)
-            string telemetryJson = "{\"mode\":\"detection\",\"scene\":\"MultiObjectDetection\"}";
-
-            // 4. Send UDP (returns immediately - no blocking!)
-            m_transport.SendFrame(trace, jpegData, telemetryJson);
-
-            Debug.Log($"[V3 DETECTION] Frame {trace.frame_id} sent via UDP (mode=detection)");
-
-            // NO yield return - method completes immediately
-            // Response will arrive asynchronously via background UDP listener
-        }
-
-        /// <summary>
-        /// Encode texture to JPEG bytes.
-        /// </summary>
-        private byte[] EncodeTextureToJPEG(Texture texture)
-        {
-            // 1. Convert texture to Texture2D if needed
-            Texture2D tex2D = texture as Texture2D;
-            bool createdTex2D = false;  // ✅ Track if we created tex2D (for cleanup)
-
-            if (tex2D == null)
-            {
-                // Handle RenderTexture case
-                RenderTexture rt = texture as RenderTexture;
-                if (rt != null)
-                {
-                    tex2D = new Texture2D(rt.width, rt.height, TextureFormat.RGB24, false);
-                    createdTex2D = true;  // ✅ Mark for cleanup
-                    RenderTexture.active = rt;
-                    tex2D.ReadPixels(new Rect(0, 0, rt.width, rt.height), 0, 0);
-                    tex2D.Apply();
-                    RenderTexture.active = null;
-                }
-                else
-                {
-                    Debug.LogError("Unsupported texture type for server inference");
-                    return null;
-                }
-            }
-
-            // 2. Downsample texture if configured
-            Texture2D textureToEncode = tex2D;
-            int downsampleFactor = m_inferenceConfig.downsampleFactor;
-
-            if (downsampleFactor > 1)
-            {
-                int downsampledWidth = tex2D.width / downsampleFactor;
-                int downsampledHeight = tex2D.height / downsampleFactor;
-
-                RenderTexture rt = RenderTexture.GetTemporary(downsampledWidth, downsampledHeight, 0, RenderTextureFormat.ARGB32);
-                rt.filterMode = FilterMode.Bilinear;
-
-                Graphics.Blit(tex2D, rt);
-
-                RenderTexture previous = RenderTexture.active;
+                Texture2D result = new Texture2D(rt.width, rt.height, TextureFormat.RGB24, false);
                 RenderTexture.active = rt;
-                Texture2D downsampledTex = new Texture2D(downsampledWidth, downsampledHeight, TextureFormat.RGB24, false);
-                downsampledTex.ReadPixels(new Rect(0, 0, downsampledWidth, downsampledHeight), 0, 0);
-                downsampledTex.Apply();
-                RenderTexture.active = previous;
-
-                RenderTexture.ReleaseTemporary(rt);
-
-                textureToEncode = downsampledTex;
-                Debug.Log($"[V3 DETECTION] Downsampled {tex2D.width}x{tex2D.height} -> {downsampledWidth}x{downsampledHeight} (factor={downsampleFactor})");
+                result.ReadPixels(new Rect(0, 0, rt.width, rt.height), 0, 0);
+                result.Apply();
+                RenderTexture.active = null;
+                return result;
             }
 
-            // 3. Encode texture as JPEG
-            int jpegQuality = m_inferenceConfig.jpegQuality;
-            byte[] jpegBytes = textureToEncode.EncodeToJPG(jpegQuality);
-
-            // ✅ FIXED: Defer texture cleanup to next frame to ensure encoding is complete
-            // This prevents potential timing issues with texture destruction
-            if (downsampleFactor > 1 && textureToEncode != tex2D)
-            {
-                Texture2D toDestroy = textureToEncode;
-                StartCoroutine(DestroyNextFrame(toDestroy));
-            }
-
-            if (createdTex2D && tex2D != null)
-            {
-                Texture2D toDestroy = tex2D;
-                StartCoroutine(DestroyNextFrame(toDestroy));
-            }
-
-            return jpegBytes;
+            Debug.LogError("[V3 DETECTION] Unsupported texture type");
+            return null;
         }
 
-        /// <summary>
-        /// Destroy a texture on the next frame to ensure all operations are complete.
-        /// </summary>
-        private System.Collections.IEnumerator DestroyNextFrame(UnityEngine.Object obj)
+        private static Texture2D ResizeTexture(Texture2D src, float resFactor)
         {
-            yield return null;  // Wait one frame
-            if (obj != null)
-            {
-                Destroy(obj);
-            }
+            int w = Mathf.Max(1, Mathf.RoundToInt(src.width  * resFactor));
+            int h = Mathf.Max(1, Mathf.RoundToInt(src.height * resFactor));
+
+            RenderTexture rt   = RenderTexture.GetTemporary(w, h, 0, RenderTextureFormat.ARGB32);
+            RenderTexture prev = RenderTexture.active;
+            Graphics.Blit(src, rt);
+            RenderTexture.active = rt;
+
+            Texture2D result = new Texture2D(w, h, TextureFormat.RGB24, false);
+            result.ReadPixels(new Rect(0, 0, w, h), 0, 0);
+            result.Apply();
+
+            RenderTexture.active = prev;
+            RenderTexture.ReleaseTemporary(rt);
+            return result;
+        }
+
+        private IEnumerator DestroyNextFrame(UnityEngine.Object obj)
+        {
+            yield return null;
+            if (obj != null) Destroy(obj);
         }
 
         // ============================================================================
-        // LOCAL SENTIS INFERENCE (ORIGINAL CODE - PRESERVED)
+        // LOCAL SENTIS INFERENCE (ORIGINAL CODE - PRESERVED for non-server mode)
         // ============================================================================
 
-        /// <summary>
-        /// Legacy RunInference for local Sentis mode (non-server).
-        /// This is the original local inference path that runs on-device.
-        /// </summary>
         private IEnumerator RunInference()
         {
             if (!m_cameraAccess.IsPlaying)
-            {
                 yield break;
-            }
 
             [DllImport("OVRPlugin", CallingConvention = CallingConvention.Cdecl)]
             static extern OVRPlugin.Result ovrp_GetNodePoseStateAtTime(double time, OVRPlugin.Node nodeId, out OVRPlugin.PoseStatef nodePoseState);
             if (!ovrp_GetNodePoseStateAtTime(OVRPlugin.GetTimeInSeconds(), OVRPlugin.Node.Head, out _).IsSuccess())
             {
-                Debug.Log("ovrp_GetNodePoseStateAtTime failed, which means 'm_cameraAccess.GetCameraPose()' is not reliable, skipping.");
+                Debug.Log("ovrp_GetNodePoseStateAtTime failed, skipping.");
                 yield break;
             }
 
             var cachedCameraPose = m_cameraAccess.GetCameraPose();
             Texture targetTexture = m_cameraAccess.GetTexture();
 
-            // LOCAL SENTIS INFERENCE PATH (ORIGINAL)
-            Debug.Log("[SENTIS] Using LOCAL Sentis inference");
-
-            // Convert the texture to a Tensor and schedule the inference
             var textureTransform = new TextureTransform().SetDimensions(targetTexture.width, targetTexture.height, 3);
             using var input = new Tensor<float>(new TensorShape(1, 3, m_inputSize.x, m_inputSize.y));
             TextureConverter.ToTensor(targetTexture, input, textureTransform);
-
-            // Schedule all model layers
             m_engine.Schedule(input);
 
-            // Get the results. ReadbackAndCloneAsync waits for all layers to complete before returning the result
             var boxesAwaiter = (m_engine.PeekOutput(0) as Tensor<float>).ReadbackAndCloneAsync().GetAwaiter();
-            while (!boxesAwaiter.IsCompleted)
-            {
-                yield return null;
-            }
+            while (!boxesAwaiter.IsCompleted) yield return null;
             using var boxes = boxesAwaiter.GetResult();
-            if (boxes.shape[0] == 0)
-            {
-                yield break;
-            }
+            if (boxes.shape[0] == 0) yield break;
 
             var classIDsAwaiter = (m_engine.PeekOutput(1) as Tensor<int>).ReadbackAndCloneAsync().GetAwaiter();
-            while (!classIDsAwaiter.IsCompleted)
-            {
-                yield return null;
-            }
+            while (!classIDsAwaiter.IsCompleted) yield return null;
             using var classIDs = classIDsAwaiter.GetResult();
-            if (classIDs.shape[0] == 0)
-            {
-                Debug.LogError("classIDs.shape[0] == 0");
-                yield break;
-            }
+            if (classIDs.shape[0] == 0) { Debug.LogError("classIDs.shape[0] == 0"); yield break; }
 
             var scoresAwaiter = (m_engine.PeekOutput(2) as Tensor<float>).ReadbackAndCloneAsync().GetAwaiter();
-            while (!scoresAwaiter.IsCompleted)
-            {
-                yield return null;
-            }
+            while (!scoresAwaiter.IsCompleted) yield return null;
             using var scores = scoresAwaiter.GetResult();
-            if (scores.shape[0] == 0)
-            {
-                Debug.LogError("scores.shape[0] == 0");
-                yield break;
-            }
+            if (scores.shape[0] == 0) { Debug.LogError("scores.shape[0] == 0"); yield break; }
 
             NonMaxSuppression(m_detections, boxes, classIDs, scores, m_iouThreshold, m_scoreThreshold);
 
-            // Checking if spatial anchor is tracked ensures bounding boxes are placed at correct world space positions.
             if (!m_cameraAccess.IsPlaying || m_detectionManager.m_spatialAnchor == null || !m_detectionManager.m_spatialAnchor.IsTracked)
-            {
                 yield break;
-            }
 
-            // Update UI.
             m_uiInference.DrawUIBoxes(m_detections, m_inputSize, cachedCameraPose);
         }
 
@@ -599,50 +539,31 @@ namespace PassthroughCameraSamples.MultiObjectDetection
         {
             outDetections.Clear();
 
-            // Filter by score threshold first
             List<int> filteredIndices = new List<int>();
             NativeArray<float>.ReadOnly scoresArray = scores.AsReadOnlyNativeArray();
             for (int i = 0; i < scoresArray.Length; i++)
             {
                 if (scoresArray[i] >= scoreThreshold)
-                {
                     filteredIndices.Add(i);
-                }
             }
 
-            if (filteredIndices.Count == 0)
-            {
-                return;
-            }
+            if (filteredIndices.Count == 0) return;
 
-            // Sort filtered indices by scores in descending order
             filteredIndices.Sort((a, b) => scoresArray[b].CompareTo(scoresArray[a]));
 
-            // Apply NMS algorithm
             bool[] suppressed = new bool[filteredIndices.Count];
             for (int i = 0; i < filteredIndices.Count; i++)
             {
-                if (suppressed[i])
-                    continue;
+                if (suppressed[i]) continue;
 
                 int idx = filteredIndices[i];
-
-                // Add this detection to results
                 outDetections.Add((classIDs[idx], GetBox(idx)));
 
-                // Suppress overlapping boxes regardless of class
                 for (int j = i + 1; j < filteredIndices.Count; j++)
                 {
-                    if (suppressed[j])
-                        continue;
-
-                    int jdx = filteredIndices[j];
-
-                    float iou = CalculateIoU(GetBox(idx), GetBox(jdx));
-                    if (iou > iouThreshold)
-                    {
+                    if (suppressed[j]) continue;
+                    if (CalculateIoU(GetBox(idx), GetBox(filteredIndices[j])) > iouThreshold)
                         suppressed[j] = true;
-                    }
                 }
             }
 
@@ -651,30 +572,18 @@ namespace PassthroughCameraSamples.MultiObjectDetection
 
         internal static float CalculateIoU(Vector4 boxA, Vector4 boxB)
         {
-            // Boxes are in format (topLeftX, topLeftY, bottomRightX, bottomRightY)
-            // Calculate intersection coordinates
             float x1 = Mathf.Max(boxA.x, boxB.x);
             float y1 = Mathf.Max(boxA.y, boxB.y);
             float x2 = Mathf.Min(boxA.z, boxB.z);
             float y2 = Mathf.Min(boxA.w, boxB.w);
 
-            // Calculate intersection area
-            float intersectionWidth = Mathf.Max(0, x2 - x1);
-            float intersectionHeight = Mathf.Max(0, y2 - y1);
-            float intersectionArea = intersectionWidth * intersectionHeight;
+            float intersectionArea = Mathf.Max(0, x2 - x1) * Mathf.Max(0, y2 - y1);
 
-            // Calculate individual box areas
             float boxAArea = (boxA.z - boxA.x) * (boxA.w - boxA.y);
             float boxBArea = (boxB.z - boxB.x) * (boxB.w - boxB.y);
-
-            // Calculate union area
             float unionArea = boxAArea + boxBArea - intersectionArea;
 
-            // Return IoU (Intersection over Union)
-            if (unionArea == 0)
-                return 0;
-
-            return intersectionArea / unionArea;
+            return unionArea == 0 ? 0 : intersectionArea / unionArea;
         }
 
         // ============================================================================
@@ -692,16 +601,22 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 yield return req.SendWebRequest();
 
                 if (req.result == UnityWebRequest.Result.Success)
-                {
                     Debug.Log($"[V3 DETECTION] Connection OK! Response: {req.downloadHandler.text}");
-                }
                 else
-                {
-                    Debug.LogError($"[V3 DETECTION] Connection FAILED: {req.error}");
-                    Debug.LogError($"[V3 DETECTION] Result: {req.result}");
-                    Debug.LogError($"[V3 DETECTION] Response Code: {req.responseCode}");
-                }
+                    Debug.LogError($"[V3 DETECTION] Connection FAILED: {req.error} (code={req.responseCode})");
             }
         }
+
+#if UNITY_EDITOR
+        private void DebugProfileSwitch()
+        {
+            if (m_knobs == null) return;
+            if (Input.GetKeyDown(KeyCode.Alpha1)) m_knobs.Apply(OperatingProfile.Get("P1"));
+            if (Input.GetKeyDown(KeyCode.Alpha2)) m_knobs.Apply(OperatingProfile.Get("P2"));
+            if (Input.GetKeyDown(KeyCode.Alpha3)) m_knobs.Apply(OperatingProfile.Get("P3"));
+            if (Input.GetKeyDown(KeyCode.Alpha4)) m_knobs.Apply(OperatingProfile.Get("P4"));
+            if (Input.GetKeyDown(KeyCode.Alpha5)) m_knobs.Apply(OperatingProfile.Get("P5"));
+        }
+#endif
     }
 }

@@ -2,15 +2,14 @@
 
 using System.Collections;
 using UnityEngine;
-using PassthroughCameraSamples.Demo;
 
 namespace PassthroughCameraSamples.Shared.ControlPlane
 {
     /// <summary>
     /// MonoBehaviour that drives the 1-second control epoch loop.
     ///
-    /// Add this to the SAME GameObject as V3Demo_SimplifiedInferenceManager.
-    /// It obtains ControlKnobs and MetricsAggregator from that component at Start().
+    /// Add this to the SAME GameObject as SentisInferenceRunManager or V3Demo_SimplifiedInferenceManager.
+    /// It obtains ControlKnobs and MetricsAggregator via IControlPlaneTarget at Start().
     ///
     /// Epoch logic:
     ///   1. Snapshot metrics
@@ -45,16 +44,16 @@ namespace PassthroughCameraSamples.Shared.ControlPlane
 
         private IEnumerator Start()
         {
-            var manager = GetComponent<V3Demo_SimplifiedInferenceManager>();
+            var manager = GetComponent<IControlPlaneTarget>();
             if (manager == null)
             {
-                Debug.LogError("[RUNTIME CTRL] V3Demo_SimplifiedInferenceManager not found on this GameObject");
+                Debug.LogError("[RUNTIME CTRL] No IControlPlaneTarget found on this GameObject. " +
+                               "Add SentisInferenceRunManager or V3Demo_SimplifiedInferenceManager.");
                 enabled = false;
                 yield break;
             }
 
-            // V3Demo.Start() is a coroutine — wait until Knobs/Metrics are initialized
-            // (they are set before the first yield in that coroutine, but Start() call order is not guaranteed)
+            // Manager.Start() is a coroutine — wait until Knobs/Metrics are initialized
             yield return new WaitUntil(() => manager.Knobs != null);
 
             m_knobs     = manager.Knobs;

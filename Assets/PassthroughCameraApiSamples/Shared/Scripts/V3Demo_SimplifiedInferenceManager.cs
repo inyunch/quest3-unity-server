@@ -19,7 +19,7 @@ namespace PassthroughCameraSamples.Demo
     /// Standalone: runs at m_initialProfileId profile indefinitely.
     /// Add RuntimeController to this GameObject to enable adaptive policies.
     /// </summary>
-    public class V3Demo_SimplifiedInferenceManager : MonoBehaviour
+    public class V3Demo_SimplifiedInferenceManager : MonoBehaviour, IControlPlaneTarget
     {
         // ====================================================================
         // Configuration
