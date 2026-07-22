@@ -403,6 +403,21 @@ namespace PassthroughCameraSamples.Shared
             lock (m_frameTracesLock) { return m_lastDisplayedFrameId; }
         }
 
+        /// <summary>
+        /// unity_capture_ts (t1) of the currently displayed frame, or 0 if no frame has been displayed.
+        /// Use this for age sampling: ageMs = now - GetDisplayedFrameCaptureTs().
+        /// </summary>
+        public long GetDisplayedFrameCaptureTs()
+        {
+            lock (m_frameTracesLock)
+            {
+                if (m_lastDisplayedFrameId < 0) return 0;
+                if (m_frameTraces.TryGetValue(m_lastDisplayedFrameId, out FrameTrace trace))
+                    return trace.unity_capture_ts;
+                return 0;
+            }
+        }
+
         /// <summary>Returns the FrameTrace for the given frame id, or null if not found.</summary>
         public FrameTrace GetTrace(int frameId)
         {

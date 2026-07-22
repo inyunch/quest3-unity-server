@@ -216,18 +216,14 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             while (m_transport.TryGetResponse(out FrameResponse response))
                 HandleV3Response(response);
 
-            // Age sampler (P2): only when control plane is active
+            // Age sampler: a(t) = now - t1(i*), anchored to capture ts per Plan v2 §0.2
             if (m_metrics != null)
             {
-                int displayedId = m_telemetry.GetLastDisplayedFrameId();
-                if (displayedId >= 0)
+                long captureTs = m_telemetry.GetDisplayedFrameCaptureTs();
+                if (captureTs > 0)
                 {
-                    FrameTrace displayedTrace = m_telemetry.GetTrace(displayedId);
-                    if (displayedTrace != null && displayedTrace.unity_send_ts > 0)
-                    {
-                        float ageMs = TimestampUtil.GetUnixTimestampMs() - displayedTrace.unity_send_ts;
-                        m_metrics.PushAge(ageMs);
-                    }
+                    float ageMs = TimestampUtil.GetUnixTimestampMs() - captureTs;
+                    m_metrics.PushAge(ageMs);
                 }
 
                 if (m_sharedHUD != null)
@@ -288,7 +284,8 @@ namespace PassthroughCameraSamples.MultiObjectDetection
 
             try
             {
-                // 1. Capture camera frame as Texture2D
+                // 1. Capture camera frame as Texture2D — record t1 before encode
+                long captureTs = TimestampUtil.GetUnixTimestampMs();
                 Texture2D frame = GetCameraTexture2D();
                 if (frame == null)
                 {
@@ -323,6 +320,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 m_frameId++;
                 OperatingProfile profile = cpActive ? m_knobs.CurrentProfile : null;
                 FrameTrace trace = m_telemetry.CreateFrame(m_frameId, jpegData.Length, profile, policyId: "");
+                trace.unity_capture_ts = captureTs;   // t1: before encode
                 trace.upload_bytes_uncompressed = rawBytes;
 
                 // 5. Send via UDP (non-blocking fire-and-forget)
@@ -361,6 +359,12 @@ namespace PassthroughCameraSamples.MultiObjectDetection
 
             DisplayV3Frame(response);
             UpdateMetricsDisplay(response);
+
+            // Compute display_latency_ms = t4 - t1 before marking displayed
+            var trace = m_telemetry.GetTrace(response.frame_id);
+            if (trace != null && trace.unity_capture_ts > 0)
+                trace.display_latency_ms = TimestampUtil.GetUnixTimestampMs() - trace.unity_capture_ts;
+
             m_telemetry.MarkFrameDisplayed(response.frame_id);
         }
 

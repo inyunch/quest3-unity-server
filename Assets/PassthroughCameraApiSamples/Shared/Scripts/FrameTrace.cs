@@ -6,9 +6,14 @@ using UnityEngine;
 namespace PassthroughCameraSamples.Shared
 {
     /// <summary>
-    /// Tracks the complete lifecycle of a single inference frame from send to final state.
-    /// Used for parallel processing architecture where multiple frames may be in-flight simultaneously.
-    /// UPDATED: Now uses Unix millisecond timestamps for cross-system consistency.
+    /// Tracks the complete lifecycle of a single inference frame from capture to display.
+    /// Timestamp semantics (all Unix milliseconds):
+    ///   t1 = unity_capture_ts  — camera texture grabbed, before encode
+    ///   t2 = unity_send_ts     — UDP send() call completes
+    ///   t3 = unity_receive_ts  — response parsed and ready
+    ///   t4 = unity_display_ts  — frame rendered and telemetry written
+    /// Paper-reported end-to-end latency L = t4 - t1 (display_latency_ms).
+    /// e2e_ms = t3 - t2 is retained for backward compatibility.
     /// </summary>
     [Serializable]
     public class FrameTrace
@@ -18,8 +23,9 @@ namespace PassthroughCameraSamples.Shared
         public int frame_id;             // REQUIRED - sequential frame number within session
 
         // === Unity Timestamps (Unix milliseconds since epoch) ===
-        public long unity_send_ts;       // REQUIRED - when HTTP request sent
-        public long unity_receive_ts;    // CONDITIONAL - when response received (0 if pending/failed)
+        public long unity_capture_ts;    // t1 - when camera texture grabbed (before encode)
+        public long unity_send_ts;       // t2 - when UDP send() completed
+        public long unity_receive_ts;    // t3 - when response received and parsed
         public long? unity_display_ts;   // OPTIONAL - when displayed (null if not displayed)
         public long? unity_drop_ts;      // OPTIONAL - when dropped (null if not dropped)
 
@@ -32,7 +38,8 @@ namespace PassthroughCameraSamples.Shared
         public string payload_hash;            // SHA256 hash of JPEG payload (Base64-encoded) - for UDP frame verification
 
         // === Derived Timing (calculated) ===
-        public float e2e_ms;             // REQUIRED - unity_receive_ts - unity_send_ts
+        public float display_latency_ms; // t4 - t1: paper-reported E2E latency (set at MarkFrameDisplayed)
+        public float e2e_ms;             // t3 - t2: network round-trip only (backward compat)
         public float server_proc_ms;     // OPTIONAL - from response.processing_time_ms
         public float queue_wait_ms;      // OPTIONAL - from response.queue_wait_ms (time waiting in admission queue)
         public float upload_ms;          // OPTIONAL - estimated (residual method)
