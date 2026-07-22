@@ -9,15 +9,21 @@ namespace PassthroughCameraSamples.Shared.ControlPlane
     /// <summary>Snapshot of window metrics returned by MetricsAggregator.Snapshot().</summary>
     public class MetricsSnapshot
     {
+        public float MeanL;             // mean E2E latency (ms)
         public float P50L;              // p50 E2E latency (ms)
         public float P95L;              // p95 E2E latency (ms)
         public float P99L;              // p99 E2E latency (ms)
-        public float MeanA;             // mean render-age (ms) — age of currently displayed frame
+        public float MeanA;             // mean render-age (ms) — anchored to capture ts (t1)
         public float P95A;              // p95 render-age (ms)
         public float ThroughputBps;     // upload throughput (bits/s)
         public float DropRate;          // N-gate + server drops / total sent [0,1]
         public int   PendingN;          // in-flight frame count (Pending state)
         public int   LatencySampleCount;// number of latency samples in current window
+        /// <summary>
+        /// u = max(p95L/D95, meanA/Amax). Set by RuntimeController after computing with its
+        /// configured bounds; 0 when no RuntimeController is present.
+        /// </summary>
+        public float U;
     }
 
     /// <summary>
@@ -46,8 +52,11 @@ namespace PassthroughCameraSamples.Shared.ControlPlane
         private float m_lastThroughputBps  = 0f;
 
         // Drop rate
-        private int m_totalSent    = 0;
-        private int m_totalDropped = 0;
+        private int   m_totalSent    = 0;
+        private int   m_totalDropped = 0;
+
+        // u value set by RuntimeController each epoch
+        private float m_lastU = 0f;
 
         // Delegate to query pending count without coupling to FrameTelemetryTracker
         private readonly Func<int> m_getPendingCount;
@@ -92,6 +101,12 @@ namespace PassthroughCameraSamples.Shared.ControlPlane
         public void RecordSent()    { lock (m_lock) { m_totalSent++;    } }
         public void RecordDropped() { lock (m_lock) { m_totalDropped++; } }
 
+        /// <summary>
+        /// Store the latest u = max(p95L/D95, meanA/Amax) computed by RuntimeController.
+        /// This value will appear in the next Snapshot() so the HUD can display it.
+        /// </summary>
+        public void SetU(float u) { lock (m_lock) { m_lastU = u; } }
+
         // ── Snapshot ─────────────────────────────────────────────────────────
 
         /// <summary>Returns a consistent snapshot of all window metrics. Safe to call from any thread.</summary>
@@ -106,6 +121,7 @@ namespace PassthroughCameraSamples.Shared.ControlPlane
 
                 return new MetricsSnapshot
                 {
+                    MeanL              = Mean(lat),
                     P50L               = Percentile(lat,  0.50f),
                     P95L               = Percentile(lat,  0.95f),
                     P99L               = Percentile(lat,  0.99f),
@@ -115,6 +131,7 @@ namespace PassthroughCameraSamples.Shared.ControlPlane
                     DropRate           = m_totalSent > 0 ? (float)m_totalDropped / m_totalSent : 0f,
                     PendingN           = m_getPendingCount?.Invoke() ?? 0,
                     LatencySampleCount = lat.Length,
+                    U                  = m_lastU,
                 };
             }
         }

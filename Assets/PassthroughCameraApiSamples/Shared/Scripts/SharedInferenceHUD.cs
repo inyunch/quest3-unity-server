@@ -46,11 +46,12 @@ namespace PassthroughCameraSamples.Shared
         // Target FPS for reference
         private float m_targetFPS = 10f;
 
-        // Control-plane metrics (P2)
+        // Control-plane metrics
         private float  m_p95Latency   = 0f;
         private float  m_meanAge      = 0f;
         private int    m_pendingN     = 0;
         private string m_profileId    = "";
+        private float  m_u            = 0f;  // corridor variable: max(p95L/D95, meanA/Amax)
 
         private void Start()
         {
@@ -180,6 +181,7 @@ namespace PassthroughCameraSamples.Shared
             m_meanAge    = snapshot.MeanA;
             m_pendingN   = snapshot.PendingN;
             m_profileId  = profileId ?? "";
+            m_u          = snapshot.U;
         }
 
         /// <summary>
@@ -231,7 +233,9 @@ namespace PassthroughCameraSamples.Shared
             if (!string.IsNullOrEmpty(m_profileId))
             {
                 metricsStr += $"\n<b>Profile:</b> {m_profileId}  N={m_pendingN}";
-                metricsStr += $"\n<b>p95:</b> {m_p95Latency:F0}ms  <b>Age:</b> {m_meanAge:F0}ms";
+                metricsStr += $"\n<b>p95:</b> {m_p95Latency:F0}ms  <b>Ā:</b> {m_meanAge:F0}ms";
+                string uColor = m_u > 0.80f ? "#FF4444" : m_u > 0.60f ? "#FFAA00" : "#44FF88";
+                metricsStr += $"  <b>u:</b> <color={uColor}>{m_u:F2}</color>";
             }
 
             m_metricsText.text = metricsStr;

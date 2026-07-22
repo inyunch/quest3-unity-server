@@ -14,6 +14,7 @@ namespace PassthroughCameraSamples.Shared.ControlPlane
     {
         public long   Ts;            // Unix ms at epoch boundary
         public string ProfileId;     // profile active when epoch started
+        public float  MeanL;         // mean E2E latency over window (ms)
         public float  P50L;
         public float  P95L;
         public float  P99L;
@@ -21,6 +22,7 @@ namespace PassthroughCameraSamples.Shared.ControlPlane
         public float  P95A;
         public int    N;             // in-flight pending count at snapshot time
         public float  DropRate;
+        public float  U;             // max(p95L/D95, meanA/Amax) — corridor variable
         public string PolicyId;
         public string ProposalId;    // what policy returned
         public string FinalId;       // what guard approved
@@ -52,10 +54,11 @@ namespace PassthroughCameraSamples.Shared.ControlPlane
                 m_writer.WriteLine(string.Join(",",
                     "ts",
                     "profile_id",
-                    "p50L", "p95L", "p99L",
+                    "meanL", "p50L", "p95L", "p99L",
                     "meanA", "p95A",
                     "N",
                     "drop_rate",
+                    "u",
                     "policy_id",
                     "proposal_id",
                     "final_id",
@@ -83,6 +86,7 @@ namespace PassthroughCameraSamples.Shared.ControlPlane
                 m_writer.WriteLine(string.Join(",",
                     rec.Ts,
                     rec.ProfileId ?? "",
+                    rec.MeanL.ToString("F2"),
                     rec.P50L.ToString("F2"),
                     rec.P95L.ToString("F2"),
                     rec.P99L.ToString("F2"),
@@ -90,6 +94,7 @@ namespace PassthroughCameraSamples.Shared.ControlPlane
                     rec.P95A.ToString("F2"),
                     rec.N,
                     rec.DropRate.ToString("F4"),
+                    rec.U.ToString("F3"),
                     rec.PolicyId  ?? "",
                     rec.ProposalId ?? "",
                     rec.FinalId   ?? "",
